@@ -3,3 +3,8 @@ f7bin/
 build/
 node_modules/
 .idea
+.venv/
+.DS_Store
+*.der
+*.pem
+mac/__pycache__/
