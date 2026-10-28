@@ -1,8 +1,10 @@
-> **Fork development / Mac 离线地图开发** — [开发状态和使用说明](docs/mac-offline.md).
-> This fork adds a local GPX corridor planner and verified map-asset packaging tools.
-> These assets are not yet Garmin-installable; the watch loader, Mac UI and USB
-> workflow remain to be implemented and tested on a Forerunner 255.
-> Upstream code and attribution are preserved below.
+> **Breadcrumb Trail / Mac 离线赛道地图** — [中文使用说明](docs/mac-offline.md)
+>
+> This fork adds a Mac desktop workflow: import GPX, download a small OpenTopoMap
+> corridor, preview contours and the route, compile an offline FR255 data field,
+> and install over USB (MTP or mounted volume) with read-back verification.
+> The offline variant is in `watch-offline/`; the desktop app is in `mac/`.
+> Original upstream code and attribution are preserved below.
 
 A garmin watch datafield that shows a breadcrumb trail. For watches that do not support breadcrumb navigation out of the box.
 
