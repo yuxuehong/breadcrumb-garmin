@@ -1,3 +1,9 @@
+> **Fork development / Mac 离线地图开发** — [开发状态和使用说明](docs/mac-offline.md).
+> This fork adds a local GPX corridor planner and verified map-asset packaging tools.
+> These assets are not yet Garmin-installable; the watch loader, Mac UI and USB
+> workflow remain to be implemented and tested on a Forerunner 255.
+> Upstream code and attribution are preserved below.
+
 A garmin watch datafield that shows a breadcrumb trail. For watches that do not support breadcrumb navigation out of the box.
 
 Donations are always welcome, but not required: https://www.paypal.com/paypalme/pauljohnston2025
