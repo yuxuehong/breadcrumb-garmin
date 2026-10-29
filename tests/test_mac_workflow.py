@@ -10,11 +10,12 @@ import threading
 import unittest
 from unittest.mock import patch
 import urllib.error
+import xml.etree.ElementTree as ET
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'mac'))
 from PIL import Image
 from maps import (PackError, Cancelled, decode_tile, download_tiles, generate_resources,
-                  plan_route, tile_path, tile_image, APP_ID, PROGRAM_VERSION, preview_bounds)
+                  plan_route, tile_path, tile_image, APP_ID, PREVIEW_APP_ID, PROGRAM_VERSION, preview_bounds)
 from device import validate_program, install
 from server import Desktop
 
@@ -85,6 +86,17 @@ class MacWorkflowTests(unittest.TestCase):
         self.seed();tile_image(self.plan,self.root/'cache',self.plan['tiles'][0])
         self.assertEqual(self.gpx.read_bytes(),GPX)
 
+    def test_standalone_preview_has_distinct_identity_and_no_recording_or_gps_permission(self):
+        self.seed();generate_resources(self.plan,self.root/'cache',self.root/'watch',self.cancel,lambda *a:None)
+        ns={'iq':'http://www.garmin.com/xml/connectiq'}
+        root=ET.parse(self.root/'watch/preview-manifest.xml').getroot()
+        app=root.find('iq:application',ns)
+        self.assertEqual(app.get('id'),PREVIEW_APP_ID)
+        self.assertNotEqual(app.get('id'),APP_ID)
+        self.assertEqual(app.get('type'),'watch-app')
+        self.assertEqual(app.get('entry'),'TrailViewerApp')
+        self.assertEqual(root.findall('.//iq:uses-permission',ns),[])
+
     def test_preview_levels_are_local_and_cover_all_base_tiles(self):
         self.seed()
         with patch('urllib.request.urlopen',side_effect=AssertionError('preview must be offline')):
@@ -153,8 +165,13 @@ class MacWorkflowTests(unittest.TestCase):
     def program(self):
         folder=self.root/'program';folder.mkdir()
         data=b'test-program'*100
+        preview=b'test-preview'*100
         (folder/'BCTRAIL.prg').write_bytes(data)
-        (folder/'program.json').write_text(json.dumps({'device':'fr255','app_id':APP_ID,'program_version':PROGRAM_VERSION,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}))
+        (folder/'BCPREVW.prg').write_bytes(preview)
+        (folder/'program.json').write_text(json.dumps({'device':'fr255','app_id':APP_ID,'program_version':PROGRAM_VERSION,
+            'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest(),'total_bytes':len(data)+len(preview),
+            'preview':{'filename':'BCPREVW.prg','app_id':PREVIEW_APP_ID,'bytes':len(preview),
+                       'sha256':hashlib.sha256(preview).hexdigest()}}))
         return folder
 
     def test_wrong_device_or_tampered_program_blocks_install(self):
