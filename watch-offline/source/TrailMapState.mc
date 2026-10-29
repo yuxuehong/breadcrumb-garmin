@@ -16,6 +16,8 @@ class TrailMapState {
     var heading = null;
     var inside = false;
     var overviewNeeded = true;
+    var viewportWidth = 260;
+    var viewportHeight = 260;
     var baseTiles;
 
     function initialize() {
@@ -27,6 +29,10 @@ class TrailMapState {
                 follow = saved.get("follow") != false;
                 if (!follow && saved.get("x") != null && saved.get("y") != null && saved.get("zoom") != null) {
                     x = saved.get("x"); y = saved.get("y"); zoom = saved.get("zoom");
+                    if (saved.get("width")!=null && saved.get("height")!=null) {
+                        viewportWidth=trailMax(200,trailMin(260,saved.get("width")));
+                        viewportHeight=trailMax(200,trailMin(260,saved.get("height")));
+                    }
                     clamp(); overviewNeeded = false;
                 }
             }
@@ -34,7 +40,7 @@ class TrailMapState {
     }
     function save() {
         Application.Storage.setValue("camera", {"route"=>OfflineMap.ROUTE_ID, "follow"=>follow,
-            "x"=>x, "y"=>y, "zoom"=>zoom});
+            "x"=>x, "y"=>y, "zoom"=>zoom,"width"=>viewportWidth,"height"=>viewportHeight});
     }
     function project(lat, lon) {
         var latitude = trailMax(-85.051128, trailMin(85.051128, lat.toDouble()));
@@ -44,7 +50,8 @@ class TrailMapState {
             ((1.0d-Math.ln(Math.tan(radians)+1.0d/Math.cos(radians))/Math.PI)/2.0d*scale-OfflineMap.ORIGIN_Y)*256.0d];
     }
     function contains(px, py) {
-        if (px == null || py == null || px < 0 || py < 0 || px >= OfflineMap.MAP_WIDTH || py >= OfflineMap.MAP_HEIGHT) { return false; }
+        var bounds = OfflineMap.extent(OfflineMap.ZOOM);
+        if (px == null || py == null || px < bounds[0] || py < bounds[1] || px >= bounds[2] || py >= bounds[3]) { return false; }
         return baseTiles.hasKey(Math.floor(px/256).toNumber()*65536+Math.floor(py/256).toNumber());
     }
     function updateGps(px, py, direction) {
@@ -63,7 +70,10 @@ class TrailMapState {
     }
     function isTracking() { return follow && gpsX != null && (inside || recording); }
     function prepare(w, h) {
+        viewportWidth = w; viewportHeight = h;
         if (follow && !isTracking() && overviewNeeded) { fit(w, h); overviewNeeded = false; }
+        // Never shift a GPS-following camera away from the true position.
+        if (!isTracking()) { clamp(); }
     }
     function beginPreview() { follow = false; clamp(); }
     function followLocation() {
@@ -71,16 +81,21 @@ class TrailMapState {
         updateGps(gpsX, gpsY, heading);
     }
     function fit(w, h) {
+        viewportWidth = w; viewportHeight = h;
         x = (OfflineMap.MIN_X+OfflineMap.MAX_X)/2;
         y = (OfflineMap.MIN_Y+OfflineMap.MAX_Y)/2;
         var spanX = trailMax(1, OfflineMap.MAX_X-OfflineMap.MIN_X);
         var spanY = trailMax(1, OfflineMap.MAX_Y-OfflineMap.MIN_Y);
-        var ratio = trailMin((w-90)/spanX, (h-130)/spanY);
+        // Fit the bounding-box diagonal inside the round screen, including
+        // its corners, with twelve pixels of clearance around the course.
+        var diagonal = Math.sqrt(spanX*spanX+spanY*spanY);
+        var ratio = trailMax(1,trailMin(w,h)-24)/diagonal;
         zoom = OfflineMap.ZOOM+Math.floor(Math.ln(trailMax(0.00001, ratio))/Math.ln(2)).toNumber();
         clamp();
     }
     function startPoint() {
         beginPreview(); x = OfflineMap.START_X; y = OfflineMap.START_Y; zoom = OfflineMap.ZOOM;
+        clamp();
     }
     function changeZoom(delta) { beginPreview(); zoom += delta; clamp(); }
     function pan(dx, dy) {
@@ -89,9 +104,17 @@ class TrailMapState {
         x += dx*step; y += dy*step; clamp();
     }
     function clamp() {
-        x = trailMax(0, trailMin(OfflineMap.MAP_WIDTH-1, x));
-        y = trailMax(0, trailMin(OfflineMap.MAP_HEIGHT-1, y));
         zoom = trailMax(OfflineMap.MIN_ZOOM, trailMin(OfflineMap.ZOOM, zoom));
+        var bounds = OfflineMap.extent(zoom);
+        var scale = Math.pow(2,OfflineMap.ZOOM-zoom).toDouble();
+        var insetX = viewportWidth*scale/2;
+        var insetY = viewportHeight*scale/2;
+        // Keep the whole viewport inside the downloaded rectangle. The
+        // package generator supplies a full-screen margin at every level.
+        var minX = bounds[0]+insetX, maxX = bounds[2]-insetX;
+        var minY = bounds[1]+insetY, maxY = bounds[3]-insetY;
+        x = minX > maxX ? (bounds[0]+bounds[2])/2 : trailMax(minX,trailMin(maxX,x));
+        y = minY > maxY ? (bounds[1]+bounds[3])/2 : trailMax(minY,trailMin(maxY,y));
     }
 }
 
