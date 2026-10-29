@@ -3,6 +3,14 @@
 <main><aside><div class="eyebrow">离线赛道地图</div><h1>下一站，<br>山野之间。</h1><p class="intro">OpenStreetMap 路网与等高线，<br>沿着你的比赛路线一起出发。</p>
 <div class="steps"><span id="step1" class="current">1 导入路线</span><i></i><span id="step2">2 预览地图</span><i></i><span id="step3">3 安装手表</span></div>
 <section id="drop" class="drop" tabindex="0" role="button" aria-label="选择或拖入 GPX 文件"><span class="upload">↥</span><strong id="routeName">把 GPX 拖到这里</strong><span id="routeHint">或点击选择比赛路线</span><input type="file" id="file" accept=".gpx,application/gpx+xml" hidden></section>
+<button id="watchImport" class="watchImport wide" aria-controls="courses" aria-expanded="false">从手表导入</button>
+<section id="courses" class="coursePanel" aria-labelledby="courseTitle" hidden>
+<div class="courseHeader"><strong id="courseTitle">手表中的路线</strong><button id="coursesClose" class="quiet" aria-label="收起手表路线列表">收起</button></div>
+<p id="courseStatus" class="hint" aria-live="polite"></p>
+<fieldset id="courseChoices" class="courseChoices"><legend class="sr-only">选择一条路线</legend><div id="courseList"></div></fieldset>
+<div class="courseActions"><button id="coursesRefresh" class="quiet">重新读取</button><button id="courseImport" disabled>导入路线</button></div>
+<p class="hint">徒步、越野跑的路线统一列在这里。先导入到 Mac，再点击“下载并预览地图”。</p>
+</section>
 <div id="stats" class="stats" hidden><div><strong id="distance">—</strong><span>路线长度</span></div><div><strong id="tileCount">—</strong><span>地图块</span></div></div>
 <fieldset id="options"><legend>带多远的风景</legend><label>路线周边<select id="buffer"><option value="150">150 米 · 轻量</option><option value="300" selected>300 米 · 推荐</option><option value="600">600 米 · 更宽覆盖</option><option value="1000">1 公里 · 更多备用范围</option></select></label><label>地图细节<select id="zoom"><option value="15" selected>详细 · 可多放大一档</option><option value="14">标准 · 更小的地图包</option></select></label><p class="hint">所选范围为额外周边，会自动补足至少半屏余量，准备覆盖整条路线的完整底图。只下载赛道附近；旧比赛仍保留在 Mac。</p></fieldset>
 <div id="status" class="status" aria-live="polite">导入 GPX，开始准备下一场比赛。</div><progress id="progress" max="100" value="0" hidden></progress>
