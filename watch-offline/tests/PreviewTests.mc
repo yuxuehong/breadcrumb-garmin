@@ -121,3 +121,30 @@ function allPreviewLevelsLoadRealBitmapResources(logger) {
     renderer.release();
     return true;
 }
+
+(:test)
+function buttonsZoomAndPanWithoutActivityOrGps(logger) {
+    var map=freshCamera(); map.standalone=true;
+    var view=new TrailPreview(map,new TrailRenderer(map));
+    var input=new TrailPreviewDelegate(view);
+    map.fit(260,260); view.firstFit=false;
+    Test.assert(!map.follow && !map.recording && map.gpsX == null);
+    map.zoom=OfflineMap.MIN_ZOOM; var oldZoom=map.zoom;
+    Test.assert(input.onPreviousPage());
+    Test.assertEqual(map.zoom,trailMin(oldZoom+1,OfflineMap.ZOOM));
+    Test.assert(input.onNextPage());
+    Test.assertEqual(map.zoom,oldZoom);
+    map.zoom=OfflineMap.ZOOM;
+    input.onSelect(); Test.assertEqual(view.control,1);
+    map.y=OfflineMap.MAP_HEIGHT/2.0d; var y=map.y;
+    input.onPreviousPage(); Test.assert(map.y < y);
+    input.onNextPage(); Test.assertEqual(map.y,y);
+    input.onSelect(); Test.assertEqual(view.control,2);
+    map.x=OfflineMap.MAP_WIDTH/2.0d; var x=map.x;
+    input.onPreviousPage(); Test.assert(map.x < x);
+    input.onNextPage(); Test.assertEqual(map.x,x);
+    input.onSelect(); Test.assertEqual(view.control,0);
+    Test.assert(!map.follow && !map.recording && map.gpsX == null);
+    view.renderer.release();
+    return true;
+}
