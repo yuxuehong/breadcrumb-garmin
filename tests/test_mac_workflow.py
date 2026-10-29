@@ -2,6 +2,7 @@ import base64
 import hashlib
 import io
 import json
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -13,7 +14,7 @@ import urllib.error
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'mac'))
 from PIL import Image
 from maps import (PackError, Cancelled, decode_tile, download_tiles, generate_resources,
-                  plan_route, tile_path, tile_image, APP_ID)
+                  plan_route, tile_path, tile_image, APP_ID, PROGRAM_VERSION, preview_bounds)
 from device import validate_program, install
 from server import Desktop
 
@@ -84,6 +85,55 @@ class MacWorkflowTests(unittest.TestCase):
         self.seed();tile_image(self.plan,self.root/'cache',self.plan['tiles'][0])
         self.assertEqual(self.gpx.read_bytes(),GPX)
 
+    def test_preview_levels_are_local_and_cover_all_base_tiles(self):
+        self.seed()
+        with patch('urllib.request.urlopen',side_effect=AssertionError('preview must be offline')):
+            generate_resources(self.plan,self.root/'cache',self.root/'watch',self.cancel,lambda *a:None)
+        manifest=json.loads((self.root/'watch/map-manifest.json').read_text())
+        base=self.plan['zooms'][0]
+        self.assertLess(manifest['preview_min_zoom'],base)
+        for z in range(manifest['preview_min_zoom'],base):
+            parents={(t[1]//2**(base-z),t[2]//2**(base-z)) for t in self.plan['tiles']}
+            paths=list((self.root/'watch/resources').glob('Preview%d_*.png'%z))
+            self.assertEqual(len(paths),len(parents))
+            for path in paths:
+                self.assertEqual(decode_tile(path.read_bytes()).size,(256,256))
+
+    def test_preview_leaves_undownloaded_quadrants_blank(self):
+        self.seed()
+        one={**self.plan,'tiles':self.plan['tiles'][:1]}
+        generate_resources(one,self.root/'cache',self.root/'watch',self.cancel,lambda *a:None)
+        tile=one['tiles'][0]; z=tile[0]-1
+        image=Image.open(next((self.root/'watch/resources').glob('Preview%d_*.png'%z)))
+        # A remote corner of the opposite quadrant must not inherit the child map.
+        px=245 if tile[1]%2==0 else 10
+        py=245 if tile[2]%2==0 else 10
+        self.assertEqual(image.getpixel((px,py)),(220,226,214))
+
+    def test_preview_overview_fits_route_in_small_watch(self):
+        bounds,minimum=preview_bounds(self.plan)
+        scale=2**(minimum-self.plan['zooms'][0])
+        self.assertLessEqual(max(bounds[2]-bounds[0],bounds[3]-bounds[1])*scale,100)
+
+    def test_saved_camera_identity_changes_when_map_grid_changes(self):
+        identities=[]
+        for index,zoom in enumerate((14,14,15)):
+            self.plan=plan_route(self.gpx,zoom,150)
+            self.seed()
+            output=self.root/('watch%d'%index)
+            generate_resources(self.plan,self.root/'cache',output,self.cancel,lambda *a:None)
+            source=(output/'source/MapIndex.mc').read_text()
+            identities.append(re.search(r'const ROUTE_ID = "([a-f0-9]+)"',source).group(1))
+        self.assertEqual(identities[0],identities[1])
+        self.assertNotEqual(identities[0],identities[2])
+
+    def test_cancelled_preview_does_not_damage_cached_tiles(self):
+        self.seed();before={str(p):p.read_bytes() for p in (self.root/'cache').rglob('*.png')}
+        def stop(*args):self.cancel.set()
+        with self.assertRaises(Cancelled):
+            generate_resources(self.plan,self.root/'cache',self.root/'watch',self.cancel,stop)
+        self.assertEqual(before,{str(p):p.read_bytes() for p in (self.root/'cache').rglob('*.png')})
+
     def test_app_rejects_new_import_while_busy(self):
         desktop=Desktop(self.root/'desktop');desktop.job['active']=True
         with self.assertRaises(PackError):desktop.import_route({'gpx':base64.b64encode(GPX).decode()})
@@ -104,7 +154,7 @@ class MacWorkflowTests(unittest.TestCase):
         folder=self.root/'program';folder.mkdir()
         data=b'test-program'*100
         (folder/'BCTRAIL.prg').write_bytes(data)
-        (folder/'program.json').write_text(json.dumps({'device':'fr255','app_id':APP_ID,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}))
+        (folder/'program.json').write_text(json.dumps({'device':'fr255','app_id':APP_ID,'program_version':PROGRAM_VERSION,'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}))
         return folder
 
     def test_wrong_device_or_tampered_program_blocks_install(self):
@@ -112,6 +162,23 @@ class MacWorkflowTests(unittest.TestCase):
         with self.assertRaises(PackError): validate_program(folder,'fr255m')
         (folder/'BCTRAIL.prg').write_bytes(b'changed')
         with self.assertRaises(PackError):validate_program(folder,'fr255')
+
+    def test_old_map_program_requires_rebuild_before_install(self):
+        folder=self.program()
+        metadata=json.loads((folder/'program.json').read_text())
+        metadata.pop('program_version')
+        (folder/'program.json').write_text(json.dumps(metadata))
+        with self.assertRaises(PackError):validate_program(folder,'fr255')
+
+    def test_saved_race_with_old_program_remains_available_for_upgrade(self):
+        desktop=Desktop(self.root/'desktop')
+        result=desktop.import_route({'gpx':base64.b64encode(GPX).decode(),'zoom':14,'buffer':150})
+        folder=desktop.projects/result['id'];(folder/'watch').mkdir()
+        (folder/'watch/program.json').write_text('{}')
+        desktop.select(result['id'])
+        self.assertFalse(desktop.summary()['ready'])
+        with self.assertRaises(PackError):desktop.start('install')
+        self.assertEqual((folder/'route.gpx').read_bytes(),GPX)
 
     def test_volume_install_backs_up_and_leaves_other_apps(self):
         folder=self.program();apps=self.root/'GARMIN/APPS';apps.mkdir(parents=True)
