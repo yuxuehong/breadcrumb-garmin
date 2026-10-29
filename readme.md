@@ -3,6 +3,8 @@
 > This fork adds a Mac desktop workflow: import GPX, download a small OpenTopoMap
 > corridor, preview contours and the route, compile an offline FR255 data field,
 > and install over USB (MTP or mounted volume) with read-back verification.
+> On-watch route preview supports offline zoom and pan through Connect IQ Settings,
+> independently of your current GPS position. Normal activity pages retain UP/DOWN navigation.
 > The offline variant is in `watch-offline/`; the desktop app is in `mac/`.
 > Original upstream code and attribution are preserved below.
 
