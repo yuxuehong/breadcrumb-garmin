@@ -1,12 +1,44 @@
 > **Breadcrumb Trail / Mac 离线赛道地图** — [中文使用说明](docs/mac-offline.md)
 >
-> This fork adds a Mac desktop workflow: import GPX, download a small OpenTopoMap
-> corridor, preview contours and the route, compile an offline FR255 data field
+> This fork adds a Mac desktop workflow: import GPX, download OpenTopoMap coverage
+> around the race at every supported zoom level, preview contours and the route, compile an offline FR255 data field
 > plus a standalone Race Preview app, and install both over USB with read-back verification.
 > Open Race Preview from the watch activity/app list to zoom and pan before a race,
 > independently of GPS. Hiking and trail-running data pages retain UP/DOWN navigation.
 > The offline variant is in `watch-offline/`; the desktop app is in `mac/`.
 > Original upstream code and attribution are preserved below.
+
+## Mac 离线版：赛前浏览与按键
+
+在 Mac 导入 GPX → 下载并预览地图 → 生成手表地图 → USB 安装。
+地图使用 OpenStreetMap 路网、SRTM 高程和 OpenTopoMap 样式；每个缩放级别都提前下载真实底图。
+“路线周边”是额外保留的范围，程序还会自动补足至少半个屏幕的余量，准备包含整条 GPX 的完整矩形区域。
+手表离线读取已安装地图，不会临时联网补图；此功能面向一场比赛附近，不提供整省下载。
+
+拔掉 USB，返回表盘，按右上 **START → 赛道预览**（英文 **Race Preview**）。
+首次可在运动／应用列表底部的“添加”中查找，无需 GPS 或开始运动。
+启动时显示地图署名 5 秒，按 START 可提前进入地图；之后画面只保留地图和路线，按键说明放在这里。
+
+| 地图页按键 | 作用 |
+| --- | --- |
+| UP / DOWN | 默认放大 / 缩小；在移动模式中向北 / 南或西 / 东移动 |
+| START | 依次切换“缩放 → 南北移动 → 东西移动” |
+| 长按 UP | 直接选择“缩放地图”“南北移动”“东西移动”，或“查看全程”“回到起点”“地图来源” |
+| BACK | 返回上一级；在地图页退出应用 |
+
+“查看全程”会将路线放进圆形屏幕内并留出边距。移动到已下载范围的边缘会停止，保持整个视口有底图。
+“标准”为 14 级，“详细”为 15 级：若此前安装的是标准地图，选详细重新生成即可多放大一档。
+最大倍率取决于已下载地图的细节级别，不继续进行数字放大。
+所有缩放级别合计最多 256 张切片；范围较大时可选标准、减少周边范围，或将长赛道分段准备。
+
+运动中使用 **Breadcrumb Trail** 单字段全屏地图页；UP / DOWN 仍可切换到心率、距离、时间等数据页。
+正式记录中若 GPS 走出地图范围，会保留真实位置并显示越界提示。
+旧比赛需在 Mac 重新生成并安装：已有缓存会复用，缺少的范围和缩放级别会补充下载。
+
+目前用户已在真实 255 上确认 v5 缩到最小、移动到边缘均铺满屏幕，且没有常驻提示文字；室外跟随、长距离运行和续航仍待验证。
+完整安装步骤、地图来源与开发说明见[中文使用说明](docs/mac-offline.md)。
+
+---
 
 A garmin watch datafield that shows a breadcrumb trail. For watches that do not support breadcrumb navigation out of the box.
 
