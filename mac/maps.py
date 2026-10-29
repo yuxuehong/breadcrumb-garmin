@@ -26,11 +26,13 @@ TILE_URL = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
 USER_AGENT = "BreadcrumbTrail/0.2 (https://github.com/yuxuehong/breadcrumb-garmin)"
 MAX_TILES = 256  # Small race corridors only; never bulk-download a province.
 APP_ID = "9fdc9173456e49068ea76a0b21a73c25"
-PROGRAM_VERSION = 3
+PREVIEW_APP_ID = "53b0c46698f34030a7b94a1f65adb0b7"
+PROGRAM_VERSION = 4
 DEVICES = {"fr255": "Forerunner 255", "fr255m": "Forerunner 255 Music",
            "fr255s": "Forerunner 255S", "fr255sm": "Forerunner 255S Music"}
 WATCH_STRINGS = {
     'AppName': ('Breadcrumb Trail', 'Breadcrumb Trail'),
+    'PreviewAppName': ('Race Preview', '赛道预览'),
     'OneField': ('Use 1-field page', '请设为单字段全屏'),
     'Following': ('FOLLOW GPS', '跟随定位'),
     'Outside': ('OUTSIDE MAP', '当前位置超出地图'),
@@ -40,7 +42,7 @@ WATCH_STRINGS = {
     'WestEastKeys': ('UP west / DOWN east', 'UP 向西 / DOWN 向东'),
     'ControlKeys': ('START mode / hold UP menu', 'START 切换 / 长按UP菜单'),
     'BackToRun': ('BACK to activity', '按 BACK 返回运动'),
-    'OpenSettings': ('Browse: CIQ Settings', '浏览：Connect IQ设置'),
+    'OpenSettings': ('Open Race Preview', '浏览：打开赛道预览'),
     'MapMenu': ('Map options', '地图操作'),
     'FullRoute': ('View full route', '查看全程'),
     'ToStart': ('Go to start', '回到起点'),
@@ -300,6 +302,15 @@ module OfflineMap {
 </iq:application></iq:manifest>
 ''' % (APP_ID, ''.join('<iq:product id="%s"/>' % d for d in DEVICES)), encoding="utf-8")
     (output / "monkey.jungle").write_text('project.manifest = manifest.xml\nbase.sourcePath = source\nbase.resourcePath = resources\nbase.lang.zhs = resources-zhs\n', encoding="utf-8")
+    # A separate app has its own visible entry and buttons before a workout.
+    # It deliberately has no GPS or activity recording permission.
+    preview_manifest = (output/'manifest.xml').read_text().replace(APP_ID,PREVIEW_APP_ID).replace(
+        'type="datafield"','type="watch-app"').replace('name="@Strings.AppName"',
+        'name="@Strings.PreviewAppName"').replace('entry="TrailApp"','entry="TrailViewerApp"').replace(
+        '<iq:permissions><iq:uses-permission id="Positioning"/></iq:permissions>','<iq:permissions/>')
+    (output/'preview-manifest.xml').write_text(preview_manifest,encoding='utf-8')
+    (output/'preview.jungle').write_text((output/'monkey.jungle').read_text().replace(
+        'project.manifest = manifest.xml','project.manifest = preview-manifest.xml'),encoding='utf-8')
     write_json(output / "map-manifest.json", {"attribution": ATTRIBUTION, "tiles": records,
                "route_sha256": hashlib.sha256(json.dumps(plan["route"], sort_keys=True).encode()).hexdigest(),
                "zoom": z, "preview_min_zoom":minimum,
@@ -344,11 +355,12 @@ def compile_program(folder, device, key_dir, cancel):
     # Only advertise the selected device; other device packs need not be downloaded.
     namespace = "http://www.garmin.com/xml/connectiq"
     ET.register_namespace('iq',namespace)
-    manifest = ET.parse(Path(folder)/'manifest.xml')
-    products = manifest.getroot().find('.//{%s}products'%namespace)
-    for product in list(products): products.remove(product)
-    ET.SubElement(products,'{%s}product'%namespace,{'id':device})
-    manifest.write(Path(folder)/'manifest.xml',encoding='utf-8',xml_declaration=True)
+    for filename in ('manifest.xml','preview-manifest.xml'):
+        manifest = ET.parse(Path(folder)/filename)
+        products = manifest.getroot().find('.//{%s}products'%namespace)
+        for product in list(products): products.remove(product)
+        ET.SubElement(products,'{%s}product'%namespace,{'id':device})
+        manifest.write(Path(folder)/filename,encoding='utf-8',xml_declaration=True)
     key_dir = Path(key_dir)
     key_dir.mkdir(parents=True, exist_ok=True)
     key = key_dir / "developer.der"
@@ -361,25 +373,34 @@ def compile_program(folder, device, key_dir, cancel):
             raise PackError("无法生成本机编译密钥。")
         atomic_bytes(key, result.stdout)
         key.chmod(0o600)
-    output = Path(folder) / 'BCTRAIL.prg'
-    command = [str(sdk/'bin/monkeyc'), '-f', 'monkey.jungle', '-d', device, '-o', str(output),
-               '-y', str(key), '-r', '-w']
-    with (Path(folder)/'compile.log').open('w') as log:
-        process = subprocess.Popen(command, cwd=folder, env=java_env(), stdout=log, stderr=subprocess.STDOUT)
-        started = time.monotonic()
-        while process.poll() is None:
-            if cancel.wait(0.2) or time.monotonic()-started > 180:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill(); process.wait()
-                check_cancel(cancel)
-                raise PackError("手表程序编译超时，请查看构建日志。")
-    if process.returncode or not output.is_file():
-        raise PackError("手表程序编译失败；详细信息已保存到 compile.log。")
+    (Path(folder)/'program.json').unlink(missing_ok=True)
+    for jungle,filename,logname in (('monkey.jungle','BCTRAIL.prg','compile.log'),
+                                   ('preview.jungle','BCPREVW.prg','preview-compile.log')):
+        check_cancel(cancel)
+        output = Path(folder)/filename
+        command = [str(sdk/'bin/monkeyc'), '-f', jungle, '-d', device, '-o', str(output),
+                   '-y', str(key), '-r', '-w']
+        with (Path(folder)/logname).open('w') as log:
+            process = subprocess.Popen(command, cwd=folder, env=java_env(), stdout=log, stderr=subprocess.STDOUT)
+            started = time.monotonic()
+            while process.poll() is None:
+                if cancel.wait(0.2) or time.monotonic()-started > 180:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill(); process.wait()
+                    check_cancel(cancel)
+                    raise PackError("手表程序编译超时，请查看构建日志。")
+            if process.returncode or not output.is_file():
+                raise PackError("手表程序编译失败；详细信息已保存到 %s。"%logname)
+    output = Path(folder)/'BCTRAIL.prg'
+    preview = Path(folder)/'BCPREVW.prg'
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     write_json(Path(folder)/'program.json', {"device":device, "sha256":digest, "bytes":output.stat().st_size,
                "app_id":APP_ID, "program_version":PROGRAM_VERSION,
+               "preview":{"filename":preview.name,"app_id":PREVIEW_APP_ID,"bytes":preview.stat().st_size,
+                          "sha256":hashlib.sha256(preview.read_bytes()).hexdigest()},
+               "total_bytes":output.stat().st_size+preview.stat().st_size,
                "sdk":sdk.name, "hardware_verified":False})
     return output
