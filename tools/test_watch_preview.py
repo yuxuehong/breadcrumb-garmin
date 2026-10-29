@@ -36,11 +36,12 @@ def run_bounded(command, folder, timeout, check_exit=True):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('map_folder',type=Path)
+    parser.add_argument('--viewer',action='store_true',help='Run with the standalone Race Preview entry point')
     parser.add_argument('--key',type=Path,default=ROOT/'build/desktop-data/private/developer.der')
     args=parser.parse_args()
     folder=args.map_folder.resolve()
     sdk=find_sdk()
-    jungle=(folder/'monkey.jungle').read_text().replace('base.sourcePath = source',
+    jungle=(folder/('preview.jungle' if args.viewer else 'monkey.jungle')).read_text().replace('base.sourcePath = source',
         'base.sourcePath = source;'+os.path.relpath(ROOT/'watch-offline/tests',folder))
     (folder/'preview-tests.jungle').write_text(jungle)
     run_bounded([str(sdk/'bin/monkeyc'),'-f','preview-tests.jungle','-d','fr255','-y',str(args.key),
