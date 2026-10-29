@@ -19,15 +19,18 @@ from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-from offline_pack import PackError, make_plan, project, tile_path, write_json
+from offline_pack import PackError, make_plan, project, tile_path, write_json, WORLD
 
 ATTRIBUTION = "Map data © OpenStreetMap contributors, SRTM | Map style © OpenTopoMap (CC BY-SA 3.0)"
 TILE_URL = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
 USER_AGENT = "BreadcrumbTrail/0.2 (https://github.com/yuxuehong/breadcrumb-garmin)"
-MAX_TILES = 256  # Small race corridors only; never bulk-download a province.
+MAX_TILES = 256  # All detail levels combined; never bulk-download a province.
 APP_ID = "9fdc9173456e49068ea76a0b21a73c25"
 PREVIEW_APP_ID = "53b0c46698f34030a7b94a1f65adb0b7"
-PROGRAM_VERSION = 4
+PROGRAM_VERSION = 5
+COVERAGE_VERSION = 1
+WATCH_PADDING = 132  # Half of the largest 255 screen plus rounding allowance.
+FIT_DIAMETER = 194  # Smallest 255S screen (218 px), with a 12 px round-edge margin.
 DEVICES = {"fr255": "Forerunner 255", "fr255m": "Forerunner 255 Music",
            "fr255s": "Forerunner 255S", "fr255sm": "Forerunner 255S Music"}
 WATCH_STRINGS = {
@@ -47,6 +50,18 @@ WATCH_STRINGS = {
     'FullRoute': ('View full route', '查看全程'),
     'ToStart': ('Go to start', '回到起点'),
     'FollowAction': ('Follow GPS', '恢复跟随定位'),
+    'ZoomMode': ('Zoom map', '缩放地图'),
+    'NorthSouthMode': ('Move north / south', '南北移动'),
+    'WestEastMode': ('Move west / east', '东西移动'),
+    'MapAbout': ('Map sources', '地图来源'),
+    'AttributionData': ('© OpenStreetMap contributors', '© OpenStreetMap contributors'),
+    'AttributionTerrain': ('Elevation: SRTM', 'Elevation: SRTM'),
+    'AttributionStyle': ('Map style © OpenTopoMap', 'Map style © OpenTopoMap'),
+    'AttributionLicense': ('CC BY-SA 3.0', 'CC BY-SA 3.0'),
+    'AttributionOsmUrl': ('openstreetmap.org/copyright', 'openstreetmap.org/copyright'),
+    'AttributionMapUrl': ('opentopomap.org/about', 'opentopomap.org/about'),
+    'AttributionLicenseUrl': ('creativecommons.org/licenses/by-sa/3.0/', 'creativecommons.org/licenses/by-sa/3.0/'),
+    'AttributionContinue': ('START: view map', 'START 查看地图'),
 }
 
 
@@ -146,6 +161,31 @@ def plan_route(gpx, zoom=15, buffer_m=300):
     xs, ys = [t[1] for t in plan["tiles"]], [t[2] for t in plan["tiles"]]
     if max(xs) - min(xs) > 128 or max(ys) - min(ys) > 128:
         raise PackError("路线跨度过大，请按赛事分段导出 GPX。")
+    # Each zoom gets real, complete map tiles. Shrinking a narrow corridor
+    # cannot reveal geography that was never downloaded.
+    points = [p for segment in plan['route']['segments'] for p in segment]
+    projected = [project(p) for p in points]
+    left, top = min(p[0] for p in projected), min(p[1] for p in projected)
+    right, bottom = max(p[0] for p in projected), max(p[1] for p in projected)
+    diameter = math.hypot(right-left, bottom-top)*256*2**zoom
+    minimum = max(0, min(zoom-1, zoom+math.floor(math.log2(FIT_DIAMETER/max(1, diameter)))))
+    radius = buffer_m/(WORLD*math.cos(math.radians(max(abs(p[0]) for p in points))))
+    tiles, coverage = [], {}
+    for level in range(minimum, zoom+1):
+        n = 2**level
+        padding = max(WATCH_PADDING/256/n, radius)
+        bounds = [math.floor((left-padding)*n), math.floor((top-padding)*n),
+                  math.floor((right+padding)*n), math.floor((bottom+padding)*n)]
+        if bounds[0] < 0 or bounds[1] < 0 or bounds[2] >= n or bounds[3] >= n:
+            raise PackError("路线靠近地图投影边界，暂不能生成完整屏幕底图。请缩小范围或拆分路线。")
+        count = (bounds[2]-bounds[0]+1)*(bounds[3]-bounds[1]+1)
+        if len(tiles)+count > MAX_TILES:
+            raise PackError("铺满屏幕所需地图超过 256 张。请选择标准细节、较小周边范围，或按比赛分段导入；没有删减地图。")
+        tiles.extend([level,x,y] for x in range(bounds[0],bounds[2]+1)
+                     for y in range(bounds[1],bounds[3]+1))
+        coverage[str(level)] = bounds
+    plan.update(tiles=tiles, coverage=coverage, coverage_version=COVERAGE_VERSION,
+                preview_min_zoom=minimum)
     plan["attribution"] = ATTRIBUTION
     plan["distance_m"] = route_distance(plan["route"])
     plan["point_count"] = sum(map(len, plan["route"]["segments"]))
@@ -189,53 +229,39 @@ def paint_route(image, route, tile):
 
 def preview_bounds(plan):
     z = plan['zooms'][0]
-    ox = min(t[1] for t in plan['tiles'])
-    oy = min(t[2] for t in plan['tiles'])
+    base_tiles = [t for t in plan['tiles'] if t[0] == z]
+    ox = min(t[1] for t in base_tiles)
+    oy = min(t[2] for t in base_tiles)
     points = [project(p) for segment in plan['route']['segments'] for p in segment]
     xs = [(p[0]*2**z-ox)*256 for p in points]
     ys = [(p[1]*2**z-oy)*256 for p in points]
     bounds = [min(xs), min(ys), max(xs), max(ys)]
-    # Fit the entire course in the usable area of the smallest 255 screen,
-    # leaving room for the round bezel and on-watch button instructions.
-    steps = max(1, math.ceil(math.log2(max(max(xs)-min(xs), max(ys)-min(ys), 100)/100)))
-    return bounds, max(0, z-steps)
-
-
-def generate_preview_levels(plan, resources, records, cancel):
-    """Derive smaller maps from the downloaded corridor; no extra tile requests.
-
-    Missing quadrants remain visibly blank. Never stretch edge tiles into areas
-    that were not downloaded. Load at most four source images per parent.
-    """
-    base = plan['zooms'][0]
-    bounds, minimum = preview_bounds(plan)
-    levels = {base: [(r['tile'], 'Tile%d'%i, resources/('tile_%d.png'%i)) for i,r in enumerate(records)]}
-    xml = []
-    for z in range(base-1, minimum-1, -1):
-        check_cancel(cancel)
-        children = {(tile[1],tile[2]):path for tile,_,path in levels[z+1]}
-        parents = sorted({(x//2,y//2) for x,y in children})
-        level = []
-        for i,(x,y) in enumerate(parents):
-            check_cancel(cancel)
-            image = Image.new('RGB',(256,256),'#dce2d6')
-            for dx in range(2):
-                for dy in range(2):
-                    path = children.get((x*2+dx,y*2+dy))
-                    if path:
-                        with Image.open(path) as child:
-                            image.paste(child.resize((128,128),Image.Resampling.LANCZOS),(dx*128,dy*128))
-            paint_route(image,plan['route'],[z,x,y])
-            name = 'Preview%d_%d'%(z,i)
-            path = resources/(name+'.png')
-            image.save(path)
-            xml.append('<bitmap id="%s" filename="%s.png" dithering="none" compress="true"/>'%(name,name))
-            level.append(([z,x,y],name,path))
-        levels[z] = level
-    return bounds, minimum, levels, xml
+    return bounds, plan['preview_min_zoom']
 
 
 def generate_resources(plan, cache, output, cancel, progress):
+    if plan.get('coverage_version') != COVERAGE_VERSION:
+        raise PackError("请重新打开这场比赛，补齐各级缩放所需的满屏地图。")
+    base, minimum = plan['zooms'][0], plan['preview_min_zoom']
+    coverage = plan['coverage']
+    invalid = "地图覆盖不完整，请重新导入 GPX；没有生成带空白的地图。"
+    if (type(minimum) is not int or base not in (14,15) or not 0 <= minimum <= base
+            or set(coverage) != {str(z) for z in range(minimum,base+1)}):
+        raise PackError(invalid)
+    expected = []
+    for level in range(minimum,base+1):
+        b = coverage[str(level)]
+        if (not isinstance(b,list) or len(b)!=4 or any(type(v) is not int for v in b)
+                or not 0 <= b[0] < b[2] < 2**level or not 0 <= b[1] < b[3] < 2**level):
+            raise PackError(invalid)
+        count = (b[2]-b[0]+1)*(b[3]-b[1]+1)
+        if len(expected)+count > MAX_TILES:
+            raise PackError(invalid)
+        expected.extend([level,x,y] for x in range(b[0],b[2]+1) for y in range(b[1],b[3]+1))
+    if expected != plan['tiles']:
+        raise PackError("地图覆盖不完整，请重新导入 GPX；没有生成带空白的地图。")
+    if any(not (Path(cache)/tile_path(t)).is_file() for t in expected):
+        raise PackError("地图尚未下载完整，请先完成下载。")
     output = Path(output)
     if output.exists():
         raise PackError("构建目录已存在，请重新选择本次地图。")
@@ -246,7 +272,8 @@ def generate_resources(plan, cache, output, cancel, progress):
     shutil.copy(ROOT / "resources/drawables/launcher_icon.png", resources / "icon.png")
     tiles = plan["tiles"]
     z = plan["zooms"][0]
-    ox, oy = min(t[1] for t in tiles), min(t[2] for t in tiles)
+    base_tiles = [t for t in tiles if t[0] == z]
+    ox, oy = min(t[1] for t in base_tiles), min(t[2] for t in base_tiles)
     start = project(plan["route"]["segments"][0][0])
     xml = ['<resources>', '<bitmap id="LauncherIcon" filename="icon.png" scaleX="40" scaleY="40"/>']
     records = []
@@ -258,8 +285,9 @@ def generate_resources(plan, cache, output, cancel, progress):
         xml.append('<bitmap id="Tile%d" filename="tile_%d.png" dithering="none" compress="true"/>' % (i, i))
         records.append({"tile": tile, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
         progress(i+1, len(tiles), "准备手表地图")
-    bounds, minimum, levels, preview_xml = generate_preview_levels(plan,resources,records,cancel)
-    xml.extend(preview_xml)
+    bounds, minimum = preview_bounds(plan)
+    levels = {level: [(t,'Tile%d'%i) for i,t in enumerate(tiles) if t[0] == level]
+              for level in range(minimum,z+1)}
     xml.append('</resources>')
     (resources / "resources.xml").write_text('\n'.join(xml), encoding="utf-8")
     for locale, column in (('resources',0),('resources-zhs',1)):
@@ -284,15 +312,20 @@ module OfflineMap {
     const MAP_WIDTH = %d;
     const MAP_HEIGHT = %d;
     function index(zoom) { %s return {}; }
+    function extent(zoom) { %s return [0,0,MAP_WIDTH,MAP_HEIGHT]; }
 }
 ''' % (z, minimum, ox, oy, (start[0]*2**z-ox)*256, (start[1]*2**z-oy)*256,
        # Saved camera coordinates belong to this exact pixel grid, not just GPX.
        # Changing detail or corridor coverage must not restore an old camera.
-       hashlib.sha256(json.dumps({'route':plan['route'],'tiles':tiles,'zoom':z},sort_keys=True).encode()).hexdigest()[:20], *bounds,
-       (max(t[1] for t in tiles)-ox+1)*256, (max(t[2] for t in tiles)-oy+1)*256,
+       hashlib.sha256(json.dumps({'route':plan['route'],'tiles':tiles,'zoom':z,'coverage':COVERAGE_VERSION},sort_keys=True).encode()).hexdigest()[:20], *bounds,
+       (max(t[1] for t in base_tiles)-ox+1)*256, (max(t[2] for t in base_tiles)-oy+1)*256,
        '\n'.join('if (zoom == %d) { return {%s}; }'%(level, ',\n'.join(
            '%d => Rez.Drawables.%s'%((tile[1]-ox//2**(z-level))*65536+tile[2]-oy//2**(z-level), name)
-           for tile,name,_ in items)) for level,items in sorted(levels.items())))
+           for tile,name in items)) for level,items in sorted(levels.items())),
+       '\n'.join('if (zoom == %s) { return [%s]; }'%(level,','.join(str(v) for v in (
+           (b[0]*2**(z-int(level))-ox)*256,(b[1]*2**(z-int(level))-oy)*256,
+           ((b[2]+1)*2**(z-int(level))-ox)*256,((b[3]+1)*2**(z-int(level))-oy)*256)))
+           for level,b in plan['coverage'].items()))
     (output / "source/MapIndex.mc").write_text(source, encoding="utf-8")
     (output / "manifest.xml").write_text('''<?xml version="1.0"?>
 <iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
@@ -314,6 +347,7 @@ module OfflineMap {
     write_json(output / "map-manifest.json", {"attribution": ATTRIBUTION, "tiles": records,
                "route_sha256": hashlib.sha256(json.dumps(plan["route"], sort_keys=True).encode()).hexdigest(),
                "zoom": z, "preview_min_zoom":minimum,
+               "coverage_version":COVERAGE_VERSION,"coverage":plan['coverage'],
                "preview_assets":sum(len(items) for level,items in levels.items() if level!=z),
                "route_bounds":bounds, "device_capacity_verified": False})
     return output

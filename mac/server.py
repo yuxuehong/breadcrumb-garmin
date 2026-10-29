@@ -15,8 +15,8 @@ import traceback
 import urllib.parse
 import uuid
 
-from maps import (ROOT, PackError, Cancelled, plan_route, download_tiles, tile_image,
-                  generate_resources, compile_program, write_json, find_sdk, DEVICES, PROGRAM_VERSION)
+from maps import (ROOT, PackError, Cancelled, plan_route, download_tiles, decode_tile, tile_path,
+                  generate_resources, compile_program, write_json, find_sdk, DEVICES, COVERAGE_VERSION)
 from device import detect, install, validate_bundle
 
 
@@ -94,9 +94,19 @@ class Desktop:
             self.idle()
             if len(identity)!=32 or any(c not in '0123456789abcdef' for c in identity) or not (self.projects/identity/'plan.json').is_file():
                 raise PackError('找不到这场比赛。')
+            self.upgrade_plan(self.projects/identity)
             self.current = identity
-            message = '已打开保存的比赛。' if self.program_ready(self.projects/identity) else '已打开比赛。点击生成手表地图，加入独立“赛道预览”入口；已有地图会直接复用。'
+            message = '已打开保存的比赛。' if self.program_ready(self.projects/identity) else '已打开比赛。点击生成手表地图，补齐各级缩放的满屏底图；已有地图会直接复用。'
             self.job = {'active':False,'stage':'selected','message':message,'progress':0}
+
+    def upgrade_plan(self, folder):
+        old = json.loads((folder/'plan.json').read_text())
+        if old.get('coverage_version') == COVERAGE_VERSION:
+            return
+        plan = plan_route(folder/'route.gpx',old['zooms'][0],old['buffer_m'])
+        plan['route']['name'] = old['route']['name']
+        # Replanning preserves the raw route, cached maps and prior watch build.
+        write_json(folder/'plan.json',plan)
 
     def update_options(self,payload):
         with self.lock:
@@ -113,6 +123,7 @@ class Desktop:
             if not self.current: raise PackError('请先导入 GPX。')
             if action not in ('download','build','install'): raise PackError('不支持的操作。')
             if selected_device not in DEVICES: raise PackError('手表型号不支持。')
+            self.upgrade_plan(self.projects/self.current)
             if action=='install' and not self.program_ready(self.projects/self.current):
                 raise PackError('请先重新生成手表地图，以加入最新的预览功能。')
             self.cancel.clear()
@@ -190,7 +201,9 @@ class Handler(BaseHTTPRequestHandler):
                 tile = [int(z),int(x),int(y)]
                 plan = json.loads((self.server.desktop.projects/identity/'plan.json').read_text())
                 if tile not in plan['tiles']: raise PackError('超出本次地图范围。')
-                image = tile_image(plan,self.server.desktop.cache,tile)
+                # The desktop draws a crisp GPX overlay itself. Only watch
+                # resources need the route baked into each raster tile.
+                image = decode_tile((self.server.desktop.cache/tile_path(tile)).read_bytes())
                 data=io.BytesIO();image.save(data,format='PNG')
                 return self.respond(200,data.getvalue(),'image/png')
             self.respond(404,{'error':'未找到内容。'})
