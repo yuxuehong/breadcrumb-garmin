@@ -16,7 +16,7 @@ import urllib.parse
 import uuid
 
 from maps import (ROOT, PackError, Cancelled, plan_route, download_tiles, tile_image,
-                  generate_resources, compile_program, write_json, find_sdk, DEVICES)
+                  generate_resources, compile_program, write_json, find_sdk, DEVICES, PROGRAM_VERSION)
 from device import detect, install
 
 
@@ -33,6 +33,13 @@ class Desktop:
         self.job = {'active':False,'stage':'idle','message':'导入 GPX，开始准备下一场比赛。','progress':0}
         self.device = None
 
+    def program_ready(self, folder):
+        try:
+            metadata = json.loads((folder/'watch/program.json').read_text())
+            return metadata.get('program_version') == PROGRAM_VERSION
+        except (OSError, ValueError):
+            return False
+
     def summary(self):
         with self.lock:
             history = []
@@ -40,14 +47,14 @@ class Desktop:
                 try:
                     plan = json.loads(p.read_text())
                     history.append({'id':p.parent.name,'name':plan['route']['name'],
-                                    'ready':(p.parent/'watch/program.json').exists()})
+                                    'ready':self.program_ready(p.parent)})
                 except (ValueError,KeyError,OSError):
                     continue
             result = {'job':dict(self.job),'device':self.device,'history':history}
             if self.current:
                 folder = self.projects/self.current
                 result.update({'id':self.current,'plan':json.loads((folder/'plan.json').read_text()),
-                               'ready':(folder/'watch/program.json').exists()})
+                               'ready':self.program_ready(folder)})
                 if result['ready']:
                     result['program'] = json.loads((folder/'watch/program.json').read_text())
             try: result['sdk'] = find_sdk().name
@@ -87,7 +94,8 @@ class Desktop:
             if len(identity)!=32 or any(c not in '0123456789abcdef' for c in identity) or not (self.projects/identity/'plan.json').is_file():
                 raise PackError('找不到这场比赛。')
             self.current = identity
-            self.job = {'active':False,'stage':'selected','message':'已打开保存的比赛。','progress':0}
+            message = '已打开保存的比赛。' if self.program_ready(self.projects/identity) else '已打开比赛。点击生成手表地图，更新缩放与预览功能；已有地图会直接复用。'
+            self.job = {'active':False,'stage':'selected','message':message,'progress':0}
 
     def update_options(self,payload):
         with self.lock:
@@ -104,8 +112,8 @@ class Desktop:
             if not self.current: raise PackError('请先导入 GPX。')
             if action not in ('download','build','install'): raise PackError('不支持的操作。')
             if selected_device not in DEVICES: raise PackError('手表型号不支持。')
-            if action=='install' and not (self.projects/self.current/'watch/program.json').exists():
-                raise PackError('请先生成手表地图。')
+            if action=='install' and not self.program_ready(self.projects/self.current):
+                raise PackError('请先重新生成手表地图，以加入最新的预览功能。')
             self.cancel.clear()
             self.job = {'active':True,'stage':action,'message':'正在准备…','progress':0}
             threading.Thread(target=self.run,args=(self.current,action,selected_device),daemon=True).start()
