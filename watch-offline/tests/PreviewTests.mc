@@ -67,10 +67,11 @@ function zoomPreservesCameraAndStopsAtLimits(logger) {
 (:test)
 function panStopsAtMapBoundary(logger) {
     var map=freshCamera(); map.startPoint();
+    var bounds=OfflineMap.extent(map.zoom);
     map.pan(-100000,-100000);
-    Test.assertEqual(map.x,0); Test.assertEqual(map.y,0);
+    Test.assertEqual(map.x,bounds[0]+130.0d); Test.assertEqual(map.y,bounds[1]+130.0d);
     map.pan(100000,100000);
-    Test.assertEqual(map.x,OfflineMap.MAP_WIDTH-1); Test.assertEqual(map.y,OfflineMap.MAP_HEIGHT-1);
+    Test.assertEqual(map.x,bounds[2]-130.0d); Test.assertEqual(map.y,bounds[3]-130.0d);
     return true;
 }
 
@@ -90,21 +91,46 @@ function previewSurvivesRestartButNotAnotherRace(logger) {
 
 class PreviewTestCanvas {
     var count=0;
-    function getWidth() { return 260; }
-    function getHeight() { return 260; }
+    var width=260;
+    var height=260;
+    var rectangles=[];
+    var textCount=0;
+    var lineCount=0;
+    var lastText=null;
+    var markerX=null;
+    var markerY=null;
+    function getWidth() { return width; }
+    function getHeight() { return height; }
     function setColor(a,b) {}
     function clear() {}
     function setPenWidth(width) {}
-    function drawLine(a,b,c,d) {}
-    function fillCircle(a,b,c) {}
+    function drawLine(a,b,c,d) { lineCount++; }
+    function fillCircle(a,b,c) { markerX=a; markerY=b; }
     function fillRectangle(a,b,c,d) {}
-    function drawText(a,b,c,d,e) {}
+    function drawText(a,b,c,d,e) { textCount++; lastText=d; }
     function getTextWidthInPixels(text,font) { return text.length()*7; }
     function drawBitmap(x,y,bitmap) {
         Test.assertEqual(bitmap.getWidth(),256);
         Test.assertEqual(bitmap.getHeight(),256);
-        Test.assert(x < 260 && y < 260 && x > -256 && y > -256);
+        Test.assert(x < width && y < height && x > -256 && y > -256);
+        rectangles.add([x,y,x+256,y+256]);
         count++;
+    }
+    function assertFullCoverage() {
+        // Check every scanline against the union of actual bitmap draws.
+        // This catches thin blank strips that a few sample pixels miss.
+        for(var y=0;y<height;y++) {
+            var cursor=0;
+            while(cursor<width) {
+                var edge=cursor;
+                for(var i=0;i<rectangles.size();i++) {
+                    var r=rectangles[i];
+                    if(r[1]<=y && r[3]>y && r[0]<=cursor && r[2]>edge) { edge=r[2]; }
+                }
+                Test.assertMessage(edge>cursor,"Downloaded tiles must cover the whole viewport");
+                cursor=edge;
+            }
+        }
     }
 }
 
@@ -117,9 +143,67 @@ function allPreviewLevelsLoadRealBitmapResources(logger) {
         var dc=new PreviewTestCanvas();
         renderer.draw(dc,0);
         Test.assert(dc.count > 0 && dc.count <= 9);
+        dc.assertFullCoverage();
+        Test.assertEqual(dc.textCount,0); Test.assertEqual(dc.lineCount,0);
     }
     renderer.release();
     return true;
+}
+
+(:test)
+function overviewFitsEveryCourseCornerInsideRoundScreen(logger) {
+    var map=freshCamera(); map.beginPreview();
+    var sizes=[218,260];
+    for(var s=0;s<sizes.size();s++) {
+        var size=sizes[s]; map.fit(size,size);
+        var scale=Math.pow(2,map.zoom-OfflineMap.ZOOM);
+        var xs=[OfflineMap.MIN_X,OfflineMap.MAX_X];
+        var ys=[OfflineMap.MIN_Y,OfflineMap.MAX_Y];
+        for(var i=0;i<2;i++) {
+            for(var j=0;j<2;j++) {
+                var dx=(xs[i]-map.x)*scale,dy=(ys[j]-map.y)*scale;
+                Test.assertMessage(Math.sqrt(dx*dx+dy*dy)<=size/2.0d-12+0.001,
+                    "Every course corner must fit inside the round bezel");
+            }
+        }
+    }
+    return true;
+}
+
+(:test)
+function everyZoomAndPanExtremeFillsBothWatchSizes(logger) {
+    var map=freshCamera(); map.beginPreview();
+    var renderer=new TrailRenderer(map);
+    var sizes=[218,260];
+    var directions=[[-1,-1],[1,-1],[-1,1],[1,1]];
+    for(var s=0;s<sizes.size();s++) {
+        map.prepare(sizes[s],sizes[s]);
+        for(var z=OfflineMap.MIN_ZOOM;z<=OfflineMap.ZOOM;z++) {
+            map.zoom=z;
+            for(var i=0;i<directions.size();i++) {
+                map.pan(directions[i][0]*1000000,directions[i][1]*1000000);
+                var dc=new PreviewTestCanvas(); dc.width=sizes[s]; dc.height=sizes[s];
+                renderer.draw(dc,0); dc.assertFullCoverage();
+                Test.assertEqual(dc.textCount,0); Test.assertEqual(dc.lineCount,0);
+            }
+        }
+    }
+    renderer.release(); return true;
+}
+
+(:test)
+function outsideTrackingShowsWarningAtActualPosition(logger) {
+    var map=freshCamera(); map.recording=true;
+    var bounds=OfflineMap.extent(OfflineMap.ZOOM);
+    var x=bounds[0]-10000,y=bounds[1]-20000;
+    map.updateGps(x,y,null);
+    var renderer=new TrailRenderer(map); var dc=new PreviewTestCanvas();
+    renderer.draw(dc,null);
+    Test.assertEqual(map.x,x); Test.assertEqual(map.y,y);
+    Test.assertEqual(dc.textCount,1);
+    Test.assert(dc.lastText.equals(trailText(Rez.Strings.Outside)));
+    Test.assertEqual(dc.markerX,130.0d); Test.assertEqual(dc.markerY,130.0d);
+    renderer.release(); return true;
 }
 
 (:test)
