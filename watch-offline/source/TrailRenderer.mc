@@ -27,7 +27,7 @@ class TrailRenderer {
         var oy = Math.floor(OfflineMap.ORIGIN_Y/divisor);
         var cx = (map.x+OfflineMap.ORIGIN_X*256.0d)/divisor-ox*256;
         var cy = (map.y+OfflineMap.ORIGIN_Y*256.0d)/divisor-oy*256;
-        var screenY = h/2-8;
+        var screenY = h/2;
         var left = cx-w/2, top = cy-screenY;
         var tx0 = Math.floor(left/256).toNumber(), ty0 = Math.floor(top/256).toNumber();
         var tx1 = Math.floor((left+w-1)/256).toNumber(), ty1 = Math.floor((top+h-1)/256).toNumber();
@@ -41,11 +41,6 @@ class TrailRenderer {
                 }
             }
         }
-        // A preview crosshair is distinct from the red GPS position marker.
-        if (!map.isTracking()) {
-            dc.setColor(Graphics.COLOR_DK_GRAY,Graphics.COLOR_TRANSPARENT); dc.setPenWidth(1);
-            dc.drawLine(w/2-6,screenY,w/2+6,screenY); dc.drawLine(w/2,screenY-6,w/2,screenY+6);
-        }
         if (map.gpsX != null && (map.inside || map.isTracking())) {
             var px = w/2+(map.gpsX-map.x)/divisor;
             var py = screenY+(map.gpsY-map.y)/divisor;
@@ -58,13 +53,10 @@ class TrailRenderer {
                 }
             }
         }
-        var label = map.isTracking() ? (map.inside ? trailText(Rez.Strings.Following) : trailText(Rez.Strings.Outside)) : trailText(Rez.Strings.Preview);
-        banner(dc,w,18,label);
-        if (control != null) {
-            var hint = map.follow ? trailText(Rez.Strings.BackToRun) : trailText(control == 0 ? Rez.Strings.ZoomKeys : control == 1 ? Rez.Strings.NorthSouthKeys : Rez.Strings.WestEastKeys);
-            banner(dc,w,h-82,hint); banner(dc,w,h-62,trailText(Rez.Strings.ControlKeys));
-        } else if (!map.isTracking()) { banner(dc,w,h-62,trailText(Rez.Strings.OpenSettings)); }
-        banner(dc,w,h-42,"OSM / SRTM / OTM");
+        // The only map overlay besides the true GPS marker is a warning
+        // when a recording has left coverage. Do not disguise that state
+        // by clamping the live position to a downloaded edge.
+        if (map.isTracking() && !map.inside) { banner(dc,w,18,trailText(Rez.Strings.Outside)); }
     }
     function banner(dc,w,y,text) {
         var width = trailMin(w-28,dc.getTextWidthInPixels(text,Graphics.FONT_XTINY)+10);
