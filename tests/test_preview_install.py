@@ -194,6 +194,7 @@ LIBMTP_mtpdevice_t *LIBMTP_Open_Raw_Device_Uncached(LIBMTP_raw_device_t *raw) {
 }
 void LIBMTP_Release_Device(LIBMTP_mtpdevice_t *device) {}
 char *LIBMTP_Get_Modelname(LIBMTP_mtpdevice_t *device) { return strdup("Forerunner 255"); }
+char *LIBMTP_Get_Serialnumber(LIBMTP_mtpdevice_t *device) { return strdup("synthetic-install-test"); }
 int LIBMTP_Get_Storage(LIBMTP_mtpdevice_t *device,int sort) { return 0; }
 LIBMTP_file_t *LIBMTP_new_file_t(void) { return calloc(1,sizeof(LIBMTP_file_t)); }
 void LIBMTP_destroy_file_t(LIBMTP_file_t *file) { free(file->filename);free(file); }
