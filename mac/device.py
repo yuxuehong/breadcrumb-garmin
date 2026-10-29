@@ -4,12 +4,185 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from maps import ROOT, DEVICES, APP_ID, PREVIEW_APP_ID, PROGRAM_VERSION, PackError
 
 PROGRAM_FILES = ('BCPREVW.PRG', 'BCTRAIL.PRG')
+MAX_COURSE_BYTES = 20 * 1024 * 1024
+
+
+def _course_format(name):
+    if (not isinstance(name, str) or not name or '/' in name or '\\' in name
+            or any(ord(c) < 32 for c in name)):
+        return None
+    extension = Path(name).suffix.lower().lstrip('.')
+    return extension if extension in ('fit', 'gpx') else None
+
+
+def _course_id(identity):
+    return hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+
+
+def _open_garmin(device):
+    garmin = Path(device['apps']).parent
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    mount = os.open(garmin.parent, flags)
+    try:
+        return os.open(garmin.name, flags, dir_fd=mount)
+    finally:
+        os.close(mount)
+
+
+def _volume_device_key(garmin):
+    descriptor = os.open('GarminDevice.xml', os.O_RDONLY | os.O_NOFOLLOW, dir_fd=garmin)
+    with os.fdopen(descriptor, 'rb') as file:
+        info = os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 2 * 1024 * 1024:
+            raise PackError('无法确认这只手表的身份，请重新连接后再读取路线。')
+        raw = file.read(2 * 1024 * 1024 + 1)
+    try:
+        if len(raw) > 2 * 1024 * 1024 or b'<!DOCTYPE' in raw.upper():
+            raise ValueError('device metadata')
+        xml = ET.fromstring(raw)
+        unit_id = next((child.text.strip() for child in xml
+                        if child.tag.split('}')[-1].lower() in ('id', 'unitid') and child.text), '')
+        if not unit_id or len(unit_id) > 1024:
+            raise ValueError('device identity')
+        return _course_id(['garmin-unit', unit_id])
+    except (ET.ParseError, ValueError) as exc:
+        raise PackError('无法确认这只手表的身份，请重新连接后再读取路线。') from exc
+
+
+def _volume_courses(device):
+    """List only direct course files; internal paths never leave this module."""
+    garmin = Path(device['apps']).parent
+    if garmin.is_symlink() or garmin.parent.is_symlink():
+        raise PackError('手表路线目录异常，请重新连接手表。')
+    descriptor = _open_garmin(device)
+    try:
+        device_key = _volume_device_key(descriptor)
+    finally:
+        os.close(descriptor)
+    folders = [p for p in garmin.iterdir() if p.name.casefold() == 'courses']
+    if not folders:
+        return []
+    if len(folders) != 1 or folders[0].is_symlink() or not folders[0].is_dir():
+        raise PackError('手表路线目录异常，请重新连接手表。')
+    folder = folders[0]
+    entries = []
+    for path in folder.iterdir():
+        kind = _course_format(path.name)
+        info = path.lstat()
+        if not kind or not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= MAX_COURSE_BYTES:
+            continue
+        identity = ['volume', device['device'], device_key, str(folder), path.name,
+                    info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns]
+        entries.append({'id': _course_id(identity), 'name': path.name, 'bytes': info.st_size,
+                        'format': kind, '_path': path, '_stat': info, '_device_key': device_key})
+    return entries
+
+
+def _course_listing():
+    detected = detect()
+    try:
+        if detected['transport'] == 'volume':
+            entries = _volume_courses(detected)
+        else:
+            listing = mtp('list-courses', timeout=30)
+            if listing.get('device') != detected['device']:
+                raise PackError('连接的手表已改变，请重新读取路线列表。')
+            device_key = listing.get('device_key')
+            if (not isinstance(device_key, str) or len(device_key) != 64
+                    or any(c not in '0123456789abcdef' for c in device_key)):
+                raise PackError('无法确认这只手表的身份，请重新连接后再读取路线。')
+            if not isinstance(listing.get('courses'), list):
+                raise PackError('手表返回了无效的路线列表，请重新连接。')
+            entries = []
+            for item in listing['courses']:
+                if not isinstance(item, dict):
+                    raise PackError('手表返回了无效的路线列表，请重新连接。')
+                kind = _course_format(item.get('name'))
+                size, storage_id, object_id = item.get('bytes'), item.get('storage_id'), item.get('object_id')
+                if (not kind or type(size) is not int or not 0 < size <= MAX_COURSE_BYTES
+                        or type(storage_id) is not int or not 0 < storage_id <= 0xffffffff
+                        or type(object_id) is not int or not 0 < object_id <= 0xffffffff):
+                    raise PackError('手表返回了无效的路线列表，请重新连接。')
+                identity = ['mtp', detected['device'], device_key, storage_id, object_id, item['name'], size]
+                entries.append({'id': _course_id(identity), 'name': item['name'], 'bytes': size,
+                                'format': kind, '_storage': storage_id, '_object': object_id,
+                                '_device_key': device_key})
+        entries.sort(key=lambda item: (item['name'].casefold(), item['id']))
+        return detected, entries
+    except OSError as exc:
+        raise PackError('无法读取手表路线目录，请检查 USB 连接。') from exc
+
+
+def _public_course(entry):
+    return {key: entry[key] for key in ('id', 'name', 'bytes', 'format')}
+
+
+def list_courses():
+    """Return public metadata, with opaque IDs and no device paths/object IDs."""
+    detected, entries = _course_listing()
+    return {'ok': True, 'device': detected['device'], 'name': detected['name'],
+            'transport': detected['transport'], 'courses': [_public_course(e) for e in entries]}
+
+
+def read_course(course_id):
+    """Read a freshly enumerated course. Never accepts a path from the caller."""
+    if (not isinstance(course_id, str) or len(course_id) != 64
+            or any(c not in '0123456789abcdef' for c in course_id)):
+        raise PackError('路线选择无效，请重新读取手表路线列表。')
+    detected, entries = _course_listing()
+    entry = next((e for e in entries if e['id'] == course_id), None)
+    if entry is None:
+        raise PackError('这条路线已改变或不在手表中，请重新读取路线列表。')
+    try:
+        if detected['transport'] == 'volume':
+            path = entry['_path']
+            # Open each component from the mount down without following links,
+            # so a swapped GARMIN/Courses directory cannot redirect this read.
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            garmin = _open_garmin(detected)
+            try:
+                if _volume_device_key(garmin) != entry['_device_key']:
+                    raise PackError('连接的手表已改变，请重新读取路线列表。')
+                directory = os.open(path.parent.name, flags, dir_fd=garmin)
+                try:
+                    descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+                    with os.fdopen(descriptor, 'rb') as file:
+                        before = os.fstat(file.fileno())
+                        expected = entry['_stat']
+                        if (not stat.S_ISREG(before.st_mode) or
+                                (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) !=
+                                (expected.st_dev, expected.st_ino, expected.st_size, expected.st_mtime_ns)):
+                            raise PackError('路线文件已改变，请重新读取路线列表。')
+                        data = file.read(MAX_COURSE_BYTES + 1)
+                        after = os.fstat(file.fileno())
+                        if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+                            raise PackError('路线文件已改变，请重新读取路线列表。')
+                finally:
+                    os.close(directory)
+            finally:
+                os.close(garmin)
+        else:
+            with tempfile.TemporaryDirectory(prefix='breadcrumb-course-') as temporary:
+                output = Path(temporary) / 'course'
+                mtp('read-course', entry['_storage'], entry['_object'], entry['bytes'], entry['name'],
+                    output, detected['device'], entry['_device_key'], timeout=120)
+                if output.is_symlink() or not output.is_file() or output.stat().st_size != entry['bytes']:
+                    raise PackError('路线复制不完整，请重新连接后重试。')
+                with output.open('rb') as file:
+                    data = file.read(MAX_COURSE_BYTES + 1)
+        if len(data) != entry['bytes'] or len(data) > MAX_COURSE_BYTES:
+            raise PackError('路线复制不完整或超过 20 MB，请重新读取路线列表。')
+        return {**_public_course(entry), 'data': data}
+    except OSError as exc:
+        raise PackError('无法读取这条路线，请重新连接手表后重试。') from exc
 
 
 def bridge_path():
