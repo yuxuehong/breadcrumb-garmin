@@ -10,6 +10,7 @@ import mimetypes
 from pathlib import Path
 import secrets
 import shutil
+import tempfile
 import threading
 import traceback
 import urllib.parse
@@ -18,6 +19,8 @@ import uuid
 from maps import (ROOT, PackError, Cancelled, plan_route, download_tiles, decode_tile, tile_path,
                   generate_resources, compile_program, write_json, find_sdk, DEVICES, COVERAGE_VERSION)
 from device import detect, install, validate_bundle
+import device as watch_device
+from courses import parse_course, MAX_COURSE_BYTES
 
 
 class Desktop:
@@ -32,6 +35,8 @@ class Desktop:
         self.current = None
         self.job = {'active':False,'stage':'idle','message':'导入 GPX，开始准备下一场比赛。','progress':0}
         self.device = None
+        self.courses = {'status':'idle','device':'','items':[],'error':''}
+        self.course_ids = {}
 
     def program_ready(self, folder):
         try:
@@ -51,7 +56,8 @@ class Desktop:
                                     'ready':self.program_ready(p.parent)})
                 except (ValueError,KeyError,OSError):
                     continue
-            result = {'job':dict(self.job),'device':self.device,'history':history}
+            result = {'job':dict(self.job),'device':self.device,'history':history,
+                      'courses':{**self.courses,'items':[dict(item) for item in self.courses['items']]}}
             if self.current:
                 folder = self.projects/self.current
                 result.update({'id':self.current,'plan':json.loads((folder/'plan.json').read_text()),
@@ -66,28 +72,133 @@ class Desktop:
         if self.job['active']:
             raise PackError('当前任务尚未结束，请等待或暂停后再操作。')
 
+    def prepare_route(self, raw, payload, cancelled=None):
+        """Stage a complete project outside history; callers publish under lock."""
+        if len(raw)>MAX_COURSE_BYTES:
+            raise PackError('GPX 文件过大，请按单场比赛导出。')
+        folder = Path(tempfile.mkdtemp(prefix='.route-',dir=self.data))
+        try:
+            if cancelled: cancelled()
+            (folder/'route.gpx').write_bytes(raw)
+            plan = plan_route(folder/'route.gpx',int(payload.get('zoom',15)),int(payload.get('buffer',300)))
+            if plan['route']['name']=='route':
+                plan['route']['name'] = Path(str(payload.get('filename','比赛路线.gpx'))).stem[:100]
+            write_json(folder/'plan.json',plan)
+            if cancelled: cancelled()
+            return folder
+        except Exception:
+            shutil.rmtree(folder)
+            raise
+
+    def publish_route(self, folder, kind=None):
+        identity = uuid.uuid4().hex
+        folder.replace(self.projects/identity)
+        self.current = identity
+        self.job = {'active':False,'stage':'planned','message':'路线已导入，下载等高线地图后可预览。','progress':0}
+        if kind: self.job['kind'] = kind
+
     def import_route(self, payload):
         with self.lock:
             self.idle()
             try: raw = base64.b64decode(payload['gpx'],validate=True)
             except (KeyError,ValueError) as exc: raise PackError('请选择有效的 GPX 文件。') from exc
-            if len(raw)>20*1024*1024:
-                raise PackError('GPX 文件过大，请按单场比赛导出。')
-            identity = uuid.uuid4().hex
-            folder = self.projects/identity
-            folder.mkdir()
+            folder = self.prepare_route(raw,payload)
             try:
-                (folder/'route.gpx').write_bytes(raw)
-                plan = plan_route(folder/'route.gpx',int(payload.get('zoom',15)),int(payload.get('buffer',300)))
-                if plan['route']['name']=='route':
-                    plan['route']['name'] = Path(str(payload.get('filename','比赛路线.gpx'))).stem[:100]
-                write_json(folder/'plan.json',plan)
-            except Exception:
-                shutil.rmtree(folder)
-                raise
-            self.current = identity
-            self.job = {'active':False,'stage':'planned','message':'路线已导入，下载等高线地图后可预览。','progress':0}
+                self.publish_route(folder)
+            finally:
+                if folder.exists(): shutil.rmtree(folder)
         return self.summary()
+
+    def check_course_cancel(self):
+        if self.cancel.is_set():
+            raise Cancelled('已取消读取，原来的比赛和地图已保留。')
+
+    def scan_courses(self):
+        with self.lock:
+            self.idle()
+            self.cancel.clear()
+            # Every scan replaces the allowlist, including empty/failed scans.
+            self.course_ids = {}
+            self.courses = {'status':'loading','device':'','items':[],'error':''}
+            self.job = {'active':True,'kind':'courses','stage':'courses',
+                        'message':'正在读取手表上的路线列表…','progress':0}
+            threading.Thread(target=self.run_course_scan,daemon=True).start()
+
+    def run_course_scan(self):
+        try:
+            self.check_course_cancel()
+            result = watch_device.list_courses()
+            self.check_course_cancel()
+            if not result.get('ok') or not isinstance(result.get('courses'),list):
+                raise PackError('无法读取手表路线列表，请重新连接后重试。')
+            items = [{key:item[key] for key in ('id','name','bytes','format')}
+                     for item in result['courses']]
+            with self.lock:
+                self.check_course_cancel()
+                self.device = {key:result[key] for key in ('device','name','transport')}
+                self.course_ids = {item['id']:dict(item) for item in items}
+                self.courses = {'status':'ready','device':result.get('name',''),
+                                'items':items,'error':''}
+                message = '请选择一条路线，读取后准备地图。' if items else '手表中没有找到可读取的路线。'
+                self.job.update(active=False,stage='courses_done',message=message,progress=100)
+        except Exception as exc:
+            self.course_failure(exc,'courses')
+
+    def import_course(self, payload):
+        with self.lock:
+            self.idle()
+            identity = payload.get('id')
+            if (not isinstance(identity,str) or self.courses['status']!='ready'
+                    or identity not in self.course_ids):
+                raise PackError('请先读取手表路线列表，再选择其中一条路线。')
+            item = dict(self.course_ids[identity])
+            options = {'zoom':payload.get('zoom',15),'buffer':payload.get('buffer',300),
+                       'filename':item['name']}
+            self.cancel.clear()
+            self.job = {'active':True,'kind':'import-course','stage':'import-course',
+                        'message':'正在读取所选路线，完成后可预览并准备地图…','progress':0}
+            threading.Thread(target=self.run_course_import,args=(item,options),daemon=True).start()
+
+    def run_course_import(self, item, options):
+        folder = None
+        try:
+            self.check_course_cancel()
+            result = watch_device.read_course(item['id'])
+            self.check_course_cancel()
+            if any(result.get(key)!=item[key] for key in ('id','name','bytes','format')):
+                raise PackError('手表路线已改变，请重新读取路线列表。')
+            raw = parse_course(result['data'],item['name'])
+            self.check_course_cancel()
+            folder = self.prepare_route(raw,options,self.check_course_cancel)
+            with self.lock:
+                self.check_course_cancel()
+                self.publish_route(folder,'import-course')
+                self.courses = {'status':'idle','device':'','items':[],'error':''}
+                self.course_ids = {}
+        except Exception as exc:
+            self.course_failure(exc,'import-course')
+        finally:
+            if folder is not None and folder.exists(): shutil.rmtree(folder)
+
+    def course_failure(self, exc, kind):
+        with self.lock:
+            cancelled = self.cancel.is_set() or isinstance(exc,Cancelled)
+            message = ('已取消读取，原来的比赛和地图已保留。' if cancelled else
+                       str(exc) if isinstance(exc,PackError) else '读取路线未完成，请重新连接手表后重试。')
+            if kind=='courses':
+                self.course_ids = {}
+                self.courses = {'status':'idle' if cancelled else 'error','device':'',
+                                'items':[],'error':'' if cancelled else message}
+            self.job.update(active=False,stage='paused' if cancelled else 'error',message=message)
+
+    def cancel_job(self):
+        with self.lock:
+            if self.job.get('stage')=='install':
+                raise PackError('安装期间请保持连接，等待校验完成。')
+            if self.job.get('active'):
+                self.cancel.set()
+                if self.job.get('kind') in ('courses','import-course'):
+                    self.job['message'] = '正在取消；等待当前 USB 读取结束，原来的地图会保留。'
 
     def select(self, identity):
         with self.lock:
@@ -215,14 +326,16 @@ class Handler(BaseHTTPRequestHandler):
             size=int(self.headers.get('Content-Length','0'))
             if not 0<=size<=28*1024*1024: raise PackError('文件过大。')
             payload=json.loads(self.rfile.read(size) or b'{}')
+            if not isinstance(payload,dict):
+                raise PackError('请求格式不正确，请重新选择路线后重试。')
             desktop=self.server.desktop
             if self.path=='/api/import': return self.respond(200,desktop.import_route(payload))
             if self.path=='/api/options': return self.respond(200,desktop.update_options(payload))
             if self.path=='/api/select': desktop.select(payload['id'])
+            elif self.path=='/api/courses': desktop.scan_courses()
+            elif self.path=='/api/import-course': desktop.import_course(payload)
             elif self.path=='/api/start': desktop.start(payload['action'],payload.get('device','fr255'))
-            elif self.path=='/api/cancel':
-                if desktop.job.get('stage')=='install': raise PackError('安装期间请保持连接，等待校验完成。')
-                desktop.cancel.set()
+            elif self.path=='/api/cancel': desktop.cancel_job()
             elif self.path=='/api/device':
                 with desktop.lock:
                     desktop.idle()
