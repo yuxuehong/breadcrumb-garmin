@@ -9,6 +9,7 @@ class TrailMapState {
     var y = OfflineMap.START_Y;
     var zoom = OfflineMap.ZOOM;
     var follow = true;
+    var standalone = false;
     var recording = false;
     var gpsX = null;
     var gpsY = null;
