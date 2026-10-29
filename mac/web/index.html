@@ -4,7 +4,7 @@
 <div class="steps"><span id="step1" class="current">1 导入路线</span><i></i><span id="step2">2 预览地图</span><i></i><span id="step3">3 安装手表</span></div>
 <section id="drop" class="drop" tabindex="0" role="button" aria-label="选择或拖入 GPX 文件"><span class="upload">↥</span><strong id="routeName">把 GPX 拖到这里</strong><span id="routeHint">或点击选择比赛路线</span><input type="file" id="file" accept=".gpx,application/gpx+xml" hidden></section>
 <div id="stats" class="stats" hidden><div><strong id="distance">—</strong><span>路线长度</span></div><div><strong id="tileCount">—</strong><span>地图块</span></div></div>
-<fieldset id="options"><legend>带多远的风景</legend><label>路线两侧<select id="buffer"><option value="150">150 米 · 轻量</option><option value="300" selected>300 米 · 推荐</option><option value="600">600 米 · 更宽覆盖</option><option value="1000">1 公里 · 更多备用范围</option></select></label><label>地图细节<select id="zoom"><option value="15" selected>详细 · 适合越野跑</option><option value="14">标准 · 更小的地图包</option></select></label><p class="hint">只准备赛道附近。调整范围后，旧比赛仍会留在 Mac。</p></fieldset>
+<fieldset id="options"><legend>带多远的风景</legend><label>路线周边<select id="buffer"><option value="150">150 米 · 轻量</option><option value="300" selected>300 米 · 推荐</option><option value="600">600 米 · 更宽覆盖</option><option value="1000">1 公里 · 更多备用范围</option></select></label><label>地图细节<select id="zoom"><option value="15" selected>详细 · 可多放大一档</option><option value="14">标准 · 更小的地图包</option></select></label><p class="hint">所选范围为额外周边，会自动补足至少半屏余量，准备覆盖整条路线的完整底图。只下载赛道附近；旧比赛仍保留在 Mac。</p></fieldset>
 <div id="status" class="status" aria-live="polite">导入 GPX，开始准备下一场比赛。</div><progress id="progress" max="100" value="0" hidden></progress>
 <button id="primary" class="primary" disabled>下载并预览地图 <span>→</span></button><button id="cancel" class="quiet wide" hidden>暂停，保留下载进度</button>
 <div class="secondary"><button id="build" disabled>生成手表地图</button><button id="install" disabled>安装到 255</button></div>
@@ -15,7 +15,7 @@
 <footer><span id="mapNote">可拖动地图，使用滚轮或按钮缩放</span><span><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">© OpenStreetMap</a> · SRTM · <a href="https://opentopomap.org/about" target="_blank" rel="noreferrer">OpenTopoMap</a> · <a href="https://creativecommons.org/licenses/by-sa/3.0/" target="_blank" rel="noreferrer">CC BY-SA</a></span></footer>
 <section id="next" class="next" hidden><strong>在手表上使用</strong>
 <p><b>赛前查看：</b>拔掉 USB，返回表盘 → 按右上 START → 打开“赛道预览”（英文 Race Preview）。首次未出现在常用列表时，可在列表底部的“添加”中查找。无需进入徒步设置，不启动运动记录，也不需要 GPS。</p>
-<p>UP / DOWN 放大、缩小；START 切换为南北或东西移动；长按 UP 可查看全程或回到起点，BACK 退出。只浏览本次下载的地图范围。</p>
+<p>启动时显示地图署名 5 秒，按 START 可提前进入。地图页默认用 UP / DOWN 放大、缩小；START 依次切换缩放、南北移动、东西移动。长按 UP 可直接选择操作模式、查看全程、回到起点或查看地图来源；BACK 退出。地图保持简洁，不常驻按键提示。</p>
 <p><b>徒步、越野跑时：</b>打开对应运动 → 长按左侧中键 UP → 徒步设置（或越野跑设置）→ 数据页面。把地图页面布局设为 <b>1 个字段（全屏）</b>，选择 Connect IQ → <b>Breadcrumb Trail</b>。已经有地图页的运动不用重新添加。普通数据页中 UP / DOWN 仍用于切换心率、距离、时间等页面。</p>
-<small>徒步和越野跑的数据页面各设置一次。“赛道预览”用于运动前浏览；运动中使用 Breadcrumb Trail 地图页跟随定位。地图朝北，蓝线是路线，绿色是起点；没有下载的区域显示为空白。</small></section>
+<small>徒步和越野跑的数据页面各设置一次。地图朝北，蓝线是路线，绿色是起点。赛前预览按圆屏显示全程，移动到下载范围边缘会停止，保持满屏有底图；手表不会联网补图。运动中使用 Breadcrumb Trail 跟随真实位置，走出地图范围会提示。旧比赛重新生成时会复用缓存，并补充下载缺少的地图。</small></section>
 </article></main><script src="/app.js"></script></body></html>
