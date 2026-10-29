@@ -26,8 +26,26 @@ TILE_URL = "https://a.tile.opentopomap.org/{z}/{x}/{y}.png"
 USER_AGENT = "BreadcrumbTrail/0.2 (https://github.com/yuxuehong/breadcrumb-garmin)"
 MAX_TILES = 256  # Small race corridors only; never bulk-download a province.
 APP_ID = "9fdc9173456e49068ea76a0b21a73c25"
+PROGRAM_VERSION = 3
 DEVICES = {"fr255": "Forerunner 255", "fr255m": "Forerunner 255 Music",
            "fr255s": "Forerunner 255S", "fr255sm": "Forerunner 255S Music"}
+WATCH_STRINGS = {
+    'AppName': ('Breadcrumb Trail', 'Breadcrumb Trail'),
+    'OneField': ('Use 1-field page', '请设为单字段全屏'),
+    'Following': ('FOLLOW GPS', '跟随定位'),
+    'Outside': ('OUTSIDE MAP', '当前位置超出地图'),
+    'Preview': ('ROUTE PREVIEW', '赛道预览'),
+    'ZoomKeys': ('UP + / DOWN -', 'UP 放大 / DOWN 缩小'),
+    'NorthSouthKeys': ('UP north / DOWN south', 'UP 向北 / DOWN 向南'),
+    'WestEastKeys': ('UP west / DOWN east', 'UP 向西 / DOWN 向东'),
+    'ControlKeys': ('START mode / hold UP menu', 'START 切换 / 长按UP菜单'),
+    'BackToRun': ('BACK to activity', '按 BACK 返回运动'),
+    'OpenSettings': ('Browse: CIQ Settings', '浏览：Connect IQ设置'),
+    'MapMenu': ('Map options', '地图操作'),
+    'FullRoute': ('View full route', '查看全程'),
+    'ToStart': ('Go to start', '回到起点'),
+    'FollowAction': ('Follow GPS', '恢复跟随定位'),
+}
 
 
 class Cancelled(PackError):
@@ -146,19 +164,73 @@ def tile_image(plan, cache, tile):
     """Bake the complete route into map resources: bounded watch RAM, no point truncation."""
     z, x, y = tile
     image = decode_tile((Path(cache) / tile_path(tile)).read_bytes())
+    return paint_route(image, plan['route'], tile)
+
+
+def paint_route(image, route, tile):
+    """Keep route strokes legible at every offline preview level."""
+    z, x, y = tile
     draw = ImageDraw.Draw(image)
     factor = 256 * 2**z
-    for segment in plan["route"]["segments"]:
+    for segment in route["segments"]:
         points = [(project(p)[0]*factor-x*256, project(p)[1]*factor-y*256) for p in segment]
         # Clip through Pillow; draw segments separately, never bridge GPX gaps.
         if len(points) > 1:
             draw.line(points, fill="white", width=7, joint="curve")
             draw.line(points, fill=(0, 65, 210), width=3, joint="curve")
-    start = plan["route"]["segments"][0][0]
+    start = route["segments"][0][0]
     sx, sy = project(start)
     sx, sy = sx*factor-x*256, sy*factor-y*256
     draw.ellipse((sx-5, sy-5, sx+5, sy+5), fill=(0, 150, 50), outline="white", width=2)
     return image
+
+
+def preview_bounds(plan):
+    z = plan['zooms'][0]
+    ox = min(t[1] for t in plan['tiles'])
+    oy = min(t[2] for t in plan['tiles'])
+    points = [project(p) for segment in plan['route']['segments'] for p in segment]
+    xs = [(p[0]*2**z-ox)*256 for p in points]
+    ys = [(p[1]*2**z-oy)*256 for p in points]
+    bounds = [min(xs), min(ys), max(xs), max(ys)]
+    # Fit the entire course in the usable area of the smallest 255 screen,
+    # leaving room for the round bezel and on-watch button instructions.
+    steps = max(1, math.ceil(math.log2(max(max(xs)-min(xs), max(ys)-min(ys), 100)/100)))
+    return bounds, max(0, z-steps)
+
+
+def generate_preview_levels(plan, resources, records, cancel):
+    """Derive smaller maps from the downloaded corridor; no extra tile requests.
+
+    Missing quadrants remain visibly blank. Never stretch edge tiles into areas
+    that were not downloaded. Load at most four source images per parent.
+    """
+    base = plan['zooms'][0]
+    bounds, minimum = preview_bounds(plan)
+    levels = {base: [(r['tile'], 'Tile%d'%i, resources/('tile_%d.png'%i)) for i,r in enumerate(records)]}
+    xml = []
+    for z in range(base-1, minimum-1, -1):
+        check_cancel(cancel)
+        children = {(tile[1],tile[2]):path for tile,_,path in levels[z+1]}
+        parents = sorted({(x//2,y//2) for x,y in children})
+        level = []
+        for i,(x,y) in enumerate(parents):
+            check_cancel(cancel)
+            image = Image.new('RGB',(256,256),'#dce2d6')
+            for dx in range(2):
+                for dy in range(2):
+                    path = children.get((x*2+dx,y*2+dy))
+                    if path:
+                        with Image.open(path) as child:
+                            image.paste(child.resize((128,128),Image.Resampling.LANCZOS),(dx*128,dy*128))
+            paint_route(image,plan['route'],[z,x,y])
+            name = 'Preview%d_%d'%(z,i)
+            path = resources/(name+'.png')
+            image.save(path)
+            xml.append('<bitmap id="%s" filename="%s.png" dithering="none" compress="true"/>'%(name,name))
+            level.append(([z,x,y],name,path))
+        levels[z] = level
+    return bounds, minimum, levels, xml
 
 
 def generate_resources(plan, cache, output, cancel, progress):
@@ -174,8 +246,7 @@ def generate_resources(plan, cache, output, cancel, progress):
     z = plan["zooms"][0]
     ox, oy = min(t[1] for t in tiles), min(t[2] for t in tiles)
     start = project(plan["route"]["segments"][0][0])
-    entries, xml = [], ['<resources>', '<bitmap id="LauncherIcon" filename="icon.png" scaleX="40" scaleY="40"/>',
-                        '<string id="AppName">Breadcrumb Trail</string>']
+    xml = ['<resources>', '<bitmap id="LauncherIcon" filename="icon.png" scaleX="40" scaleY="40"/>']
     records = []
     for i, tile in enumerate(tiles):
         check_cancel(cancel)
@@ -183,33 +254,57 @@ def generate_resources(plan, cache, output, cancel, progress):
         path = resources / ("tile_%d.png" % i)
         image.save(path)
         xml.append('<bitmap id="Tile%d" filename="tile_%d.png" dithering="none" compress="true"/>' % (i, i))
-        entries.append("%d => Rez.Drawables.Tile%d" % ((tile[1]-ox)*65536+tile[2]-oy, i))
         records.append({"tile": tile, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
         progress(i+1, len(tiles), "准备手表地图")
+    bounds, minimum, levels, preview_xml = generate_preview_levels(plan,resources,records,cancel)
+    xml.extend(preview_xml)
     xml.append('</resources>')
     (resources / "resources.xml").write_text('\n'.join(xml), encoding="utf-8")
+    for locale, column in (('resources',0),('resources-zhs',1)):
+        directory = output/locale
+        directory.mkdir(exist_ok=True)
+        (directory/'strings.xml').write_text('<resources>'+''.join(
+            '<string id="%s">%s</string>'%(key,escape(labels[column]))
+            for key,labels in WATCH_STRINGS.items())+'</resources>',encoding='utf-8')
     source = '''import Toybox.Lang;
 module OfflineMap {
     const ZOOM = %d;
+    const MIN_ZOOM = %d;
     const ORIGIN_X = %d;
     const ORIGIN_Y = %d;
     const START_X = %.8fd;
     const START_Y = %.8fd;
-    function index() { return {%s}; }
+    const ROUTE_ID = "%s";
+    const MIN_X = %.8fd;
+    const MIN_Y = %.8fd;
+    const MAX_X = %.8fd;
+    const MAX_Y = %.8fd;
+    const MAP_WIDTH = %d;
+    const MAP_HEIGHT = %d;
+    function index(zoom) { %s return {}; }
 }
-''' % (z, ox, oy, (start[0]*2**z-ox)*256, (start[1]*2**z-oy)*256, ',\n'.join(entries))
+''' % (z, minimum, ox, oy, (start[0]*2**z-ox)*256, (start[1]*2**z-oy)*256,
+       # Saved camera coordinates belong to this exact pixel grid, not just GPX.
+       # Changing detail or corridor coverage must not restore an old camera.
+       hashlib.sha256(json.dumps({'route':plan['route'],'tiles':tiles,'zoom':z},sort_keys=True).encode()).hexdigest()[:20], *bounds,
+       (max(t[1] for t in tiles)-ox+1)*256, (max(t[2] for t in tiles)-oy+1)*256,
+       '\n'.join('if (zoom == %d) { return {%s}; }'%(level, ',\n'.join(
+           '%d => Rez.Drawables.%s'%((tile[1]-ox//2**(z-level))*65536+tile[2]-oy//2**(z-level), name)
+           for tile,name,_ in items)) for level,items in sorted(levels.items())))
     (output / "source/MapIndex.mc").write_text(source, encoding="utf-8")
     (output / "manifest.xml").write_text('''<?xml version="1.0"?>
 <iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
 <iq:application id="%s" type="datafield" name="@Strings.AppName" entry="TrailApp" launcherIcon="@Drawables.LauncherIcon" minApiLevel="4.0.0">
 <iq:products>%s</iq:products><iq:permissions><iq:uses-permission id="Positioning"/></iq:permissions>
-<iq:languages><iq:language>eng</iq:language></iq:languages><iq:barrels/>
+<iq:languages><iq:language>eng</iq:language><iq:language>zhs</iq:language></iq:languages><iq:barrels/>
 </iq:application></iq:manifest>
 ''' % (APP_ID, ''.join('<iq:product id="%s"/>' % d for d in DEVICES)), encoding="utf-8")
-    (output / "monkey.jungle").write_text('project.manifest = manifest.xml\nbase.sourcePath = source\nbase.resourcePath = resources\n', encoding="utf-8")
+    (output / "monkey.jungle").write_text('project.manifest = manifest.xml\nbase.sourcePath = source\nbase.resourcePath = resources\nbase.lang.zhs = resources-zhs\n', encoding="utf-8")
     write_json(output / "map-manifest.json", {"attribution": ATTRIBUTION, "tiles": records,
                "route_sha256": hashlib.sha256(json.dumps(plan["route"], sort_keys=True).encode()).hexdigest(),
-               "zoom": z, "device_capacity_verified": False})
+               "zoom": z, "preview_min_zoom":minimum,
+               "preview_assets":sum(len(items) for level,items in levels.items() if level!=z),
+               "route_bounds":bounds, "device_capacity_verified": False})
     return output
 
 
@@ -285,5 +380,6 @@ def compile_program(folder, device, key_dir, cancel):
         raise PackError("手表程序编译失败；详细信息已保存到 compile.log。")
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     write_json(Path(folder)/'program.json', {"device":device, "sha256":digest, "bytes":output.stat().st_size,
-               "app_id":APP_ID, "sdk":sdk.name, "hardware_verified":False})
+               "app_id":APP_ID, "program_version":PROGRAM_VERSION,
+               "sdk":sdk.name, "hardware_verified":False})
     return output
