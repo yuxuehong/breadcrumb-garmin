@@ -17,7 +17,7 @@ import uuid
 
 from maps import (ROOT, PackError, Cancelled, plan_route, download_tiles, tile_image,
                   generate_resources, compile_program, write_json, find_sdk, DEVICES, PROGRAM_VERSION)
-from device import detect, install
+from device import detect, install, validate_bundle
 
 
 class Desktop:
@@ -36,8 +36,9 @@ class Desktop:
     def program_ready(self, folder):
         try:
             metadata = json.loads((folder/'watch/program.json').read_text())
-            return metadata.get('program_version') == PROGRAM_VERSION
-        except (OSError, ValueError):
+            validate_bundle(folder/'watch',metadata.get('device'))
+            return True
+        except (OSError, ValueError, PackError):
             return False
 
     def summary(self):
@@ -94,7 +95,7 @@ class Desktop:
             if len(identity)!=32 or any(c not in '0123456789abcdef' for c in identity) or not (self.projects/identity/'plan.json').is_file():
                 raise PackError('找不到这场比赛。')
             self.current = identity
-            message = '已打开保存的比赛。' if self.program_ready(self.projects/identity) else '已打开比赛。点击生成手表地图，更新缩放与预览功能；已有地图会直接复用。'
+            message = '已打开保存的比赛。' if self.program_ready(self.projects/identity) else '已打开比赛。点击生成手表地图，加入独立“赛道预览”入口；已有地图会直接复用。'
             self.job = {'active':False,'stage':'selected','message':message,'progress':0}
 
     def update_options(self,payload):
@@ -140,8 +141,8 @@ class Desktop:
                 result = install(folder/'watch',self.data/'backups')
                 write_json(folder/'installation.json',result)
             message = {'download':'地图已下载。可拖动、缩放预览，确认后生成手表地图。',
-                       'build':'手表地图已生成。连接 255，点击安装即可。',
-                       'install':'文件已写入并校验。拔线后在跑步活动中添加 Breadcrumb Trail 数据页。'}[action]
+                       'build':'运动地图和赛道预览已生成。连接 255，点击安装即可。',
+                       'install':'两个程序均已写入并校验。拔线后从表盘按 START，打开“赛道预览”；徒步和越野跑继续使用原有地图页。'}[action]
             with self.lock: self.job.update(active=False,stage=action+'_done',message=message,progress=100)
         except Exception as exc:
             with (folder/'last-error.log').open('w') as log: traceback.print_exc(file=log)
