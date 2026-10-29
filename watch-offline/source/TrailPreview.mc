@@ -39,7 +39,9 @@ class TrailPreviewDelegate extends WatchUi.BehaviorDelegate {
         var menu = new WatchUi.Menu2({:title=>trailText(Rez.Strings.MapMenu)});
         menu.addItem(new WatchUi.MenuItem(trailText(Rez.Strings.FullRoute),null,:overview,{}));
         menu.addItem(new WatchUi.MenuItem(trailText(Rez.Strings.ToStart),null,:start,{}));
-        menu.addItem(new WatchUi.MenuItem(trailText(Rez.Strings.FollowAction),null,:follow,{}));
+        if (!view.map.standalone) {
+            menu.addItem(new WatchUi.MenuItem(trailText(Rez.Strings.FollowAction),null,:follow,{}));
+        }
         WatchUi.pushView(menu,new TrailMenuDelegate(view),WatchUi.SLIDE_UP); return true;
     }
 }
