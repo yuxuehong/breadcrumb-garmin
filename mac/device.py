@@ -7,7 +7,7 @@ import shutil
 import subprocess
 import time
 import xml.etree.ElementTree as ET
-from maps import ROOT, DEVICES, APP_ID, PackError
+from maps import ROOT, DEVICES, APP_ID, PROGRAM_VERSION, PackError
 
 
 def bridge_path():
@@ -73,6 +73,7 @@ def validate_program(folder, device):
     metadata = json.loads((folder/'program.json').read_text())
     path = folder/'BCTRAIL.prg'
     if (metadata.get('device') != device or metadata.get('app_id') != APP_ID
+            or metadata.get('program_version') != PROGRAM_VERSION
             or metadata.get('bytes') != path.stat().st_size
             or metadata.get('sha256') != hashlib.sha256(path.read_bytes()).hexdigest()):
         raise PackError('程序校验未通过或手表型号不一致，请重新生成。')
