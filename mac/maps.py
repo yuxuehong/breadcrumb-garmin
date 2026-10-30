@@ -27,8 +27,12 @@ USER_AGENT = "BreadcrumbTrail/0.2 (https://github.com/yuxuehong/breadcrumb-garmi
 MAX_TILES = 256  # All detail levels combined; never bulk-download a province.
 APP_ID = "9fdc9173456e49068ea76a0b21a73c25"
 PREVIEW_APP_ID = "53b0c46698f34030a7b94a1f65adb0b7"
-PROGRAM_VERSION = 5
+PROGRAM_VERSION = 6
 COVERAGE_VERSION = 1
+NAVIGATION_MAX_POINTS = 2048  # Includes segment separators; <= 4096 watch array entries.
+NAVIGATION_TOLERANCE_M = 3.0
+NAVIGATION_MAX_TOLERANCE_M = 50.0
+NAVIGATION_OPERATION_BUDGET = 4_000_000
 WATCH_PADDING = 132  # Half of the largest 255 screen plus rounding allowance.
 FIT_DIAMETER = 194  # Smallest 255S screen (218 px), with a 12 px round-edge margin.
 DEVICES = {"fr255": "Forerunner 255", "fr255m": "Forerunner 255 Music",
@@ -39,6 +43,8 @@ WATCH_STRINGS = {
     'OneField': ('Use 1-field page', '请设为单字段全屏'),
     'Following': ('FOLLOW GPS', '跟随定位'),
     'Outside': ('OUTSIDE MAP', '当前位置超出地图'),
+    'WaitGps': ('WAITING FOR GPS', '等待 GPS 定位'),
+    'WeakGps': ('WEAK GPS', 'GPS 信号弱'),
     'Preview': ('ROUTE PREVIEW', '赛道预览'),
     'ZoomKeys': ('UP + / DOWN -', 'UP 放大 / DOWN 缩小'),
     'NorthSouthKeys': ('UP north / DOWN south', 'UP 向北 / DOWN 向南'),
@@ -218,8 +224,8 @@ def paint_route(image, route, tile):
         points = [(project(p)[0]*factor-x*256, project(p)[1]*factor-y*256) for p in segment]
         # Clip through Pillow; draw segments separately, never bridge GPX gaps.
         if len(points) > 1:
-            draw.line(points, fill="white", width=7, joint="curve")
-            draw.line(points, fill=(0, 65, 210), width=3, joint="curve")
+            draw.line(points, fill="white", width=9, joint="curve")
+            draw.line(points, fill=(0, 65, 210), width=5, joint="curve")
     start = route["segments"][0][0]
     sx, sy = project(start)
     sx, sy = sx*factor-x*256, sy*factor-y*256
@@ -237,6 +243,104 @@ def preview_bounds(plan):
     ys = [(p[1]*2**z-oy)*256 for p in points]
     bounds = [min(xs), min(ys), max(xs), max(ys)]
     return bounds, plan['preview_min_zoom']
+
+
+def _navigation_check(work, cancel, count=0):
+    if cancel is not None:
+        check_cancel(cancel)
+    work[0] -= count
+    if work[0] < 0:
+        raise PackError("路线形状过于复杂，准备导航地图超出计算上限，请将比赛路线分段后重试；没有截断路线。")
+
+
+def _simplify_navigation_segment(points, tolerance, work, cancel):
+    """Iterative RDP, retaining endpoints and never connecting separate GPX segments."""
+    unique = []
+    for index, point in enumerate(points):
+        if index % 256 == 0:
+            _navigation_check(work, cancel, min(256, len(points)-index))
+        if not unique or point != unique[-1]:
+            unique.append(point)
+    if len(unique) <= 2:
+        return unique
+    keep = {0, len(unique)-1}
+    pending = [(0, len(unique)-1)]
+    limit = tolerance*tolerance
+    while pending:
+        _navigation_check(work, cancel)
+        first, last = pending.pop()
+        ax, ay = unique[first]
+        dx, dy = unique[last][0]-ax, unique[last][1]-ay
+        length2 = dx*dx+dy*dy
+        furthest, distance2 = None, limit
+        for index in range(first+1, last):
+            if (index-first-1) % 256 == 0:
+                _navigation_check(work, cancel, min(256, last-index))
+            px, py = unique[index][0]-ax, unique[index][1]-ay
+            t = min(1, max(0, (px*dx+py*dy)/length2)) if length2 else 0
+            error2 = (px-t*dx)**2+(py-t*dy)**2
+            if error2 > distance2:
+                furthest, distance2 = index, error2
+        if furthest is not None:
+            keep.add(furthest)
+            pending.extend(((first, furthest), (furthest, last)))
+    return [unique[index] for index in sorted(keep)]
+
+
+def navigation_geometry(plan, max_points=NAVIGATION_MAX_POINTS, cancel=None,
+                        operation_budget=NAVIGATION_OPERATION_BUDGET):
+    """Bounded geometry used only to choose the live map scale, not to draw/route.
+
+    The complete original GPX is still painted onto every map level. Tolerance is
+    in approximate ground metres at the route's centre latitude. If a very dense
+    course needs more simplification, its actual tolerance is recorded; courses
+    that cannot fit within 50 metres are rejected rather than silently truncated.
+    A null coordinate pair separates disconnected tracks in the watch array.
+    """
+    if type(operation_budget) is not int or operation_budget <= 0:
+        raise ValueError("Navigation operation budget must be a positive integer")
+    work = [operation_budget]
+    _navigation_check(work, cancel)
+    z = plan['zooms'][0]
+    base_tiles = [t for t in plan['tiles'] if t[0] == z]
+    ox, oy = min(t[1] for t in base_tiles), min(t[2] for t in base_tiles)
+    segments = [segment for segment in plan['route']['segments'] if segment]
+    if not segments:
+        raise PackError("路线没有可用的导航坐标。")
+    latitudes = [point[0] for segment in segments for point in segment]
+    latitude = (min(latitudes)+max(latitudes))/2
+    meters_per_pixel = WORLD*math.cos(math.radians(latitude))/(256*2**z)
+    projected = []
+    for segment in segments:
+        coordinates = []
+        for index, point in enumerate(segment):
+            if index % 256 == 0:
+                _navigation_check(work, cancel, min(256, len(segment)-index))
+            px, py = project(point)
+            coordinates.append(((px*2**z-ox)*256, (py*2**z-oy)*256))
+        projected.append(coordinates)
+    minimum_slots = sum(min(2, len(set(segment))) for segment in projected)+len(segments)-1
+    if minimum_slots > max_points:
+        raise PackError("路线分段过多，无法保留全部独立路段，请按比赛分段导入。")
+    tolerance = NAVIGATION_TOLERANCE_M
+    while True:
+        simplified = [_simplify_navigation_segment(segment, tolerance/meters_per_pixel, work, cancel)
+                      for segment in projected]
+        point_count = sum(map(len, simplified))
+        if point_count+len(simplified)-1 <= max_points:
+            break
+        if tolerance >= NAVIGATION_MAX_TOLERANCE_M:
+            raise PackError("路线过于复杂，无法在保留导航形状的同时适配手表，请按比赛分段导入。")
+        tolerance = min(NAVIGATION_MAX_TOLERANCE_M, tolerance*1.5)
+    flat = []
+    for index, segment in enumerate(simplified):
+        if index:
+            flat.extend((None, None))
+        for x, y in segment:
+            flat.extend((round(x, 4), round(y, 4)))
+    return {'points': flat, 'point_count': point_count, 'segment_count': len(simplified),
+            'array_entries': len(flat), 'source_point_count': len(latitudes),
+            'tolerance_m': tolerance, 'meters_per_pixel': meters_per_pixel}
 
 
 def generate_resources(plan, cache, output, cancel, progress):
@@ -262,6 +366,8 @@ def generate_resources(plan, cache, output, cancel, progress):
         raise PackError("地图覆盖不完整，请重新导入 GPX；没有生成带空白的地图。")
     if any(not (Path(cache)/tile_path(t)).is_file() for t in expected):
         raise PackError("地图尚未下载完整，请先完成下载。")
+    check_cancel(cancel)
+    navigation = navigation_geometry(plan, cancel=cancel)
     output = Path(output)
     if output.exists():
         raise PackError("构建目录已存在，请重新选择本次地图。")
@@ -311,6 +417,8 @@ module OfflineMap {
     const MAX_Y = %.8fd;
     const MAP_WIDTH = %d;
     const MAP_HEIGHT = %d;
+    const METERS_PER_PIXEL = %.8fd;
+    function navigationPoints() { return [%s]; }
     function index(zoom) { %s return {}; }
     function extent(zoom) { %s return [0,0,MAP_WIDTH,MAP_HEIGHT]; }
 }
@@ -319,6 +427,8 @@ module OfflineMap {
        # Changing detail or corridor coverage must not restore an old camera.
        hashlib.sha256(json.dumps({'route':plan['route'],'tiles':tiles,'zoom':z,'coverage':COVERAGE_VERSION},sort_keys=True).encode()).hexdigest()[:20], *bounds,
        (max(t[1] for t in base_tiles)-ox+1)*256, (max(t[2] for t in base_tiles)-oy+1)*256,
+       navigation['meters_per_pixel'],
+       ','.join('null' if value is None else '%.4fd'%value for value in navigation['points']),
        '\n'.join('if (zoom == %d) { return {%s}; }'%(level, ',\n'.join(
            '%d => Rez.Drawables.%s'%((tile[1]-ox//2**(z-level))*65536+tile[2]-oy//2**(z-level), name)
            for tile,name in items)) for level,items in sorted(levels.items())),
@@ -329,7 +439,7 @@ module OfflineMap {
     (output / "source/MapIndex.mc").write_text(source, encoding="utf-8")
     (output / "manifest.xml").write_text('''<?xml version="1.0"?>
 <iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
-<iq:application id="%s" type="datafield" name="@Strings.AppName" entry="TrailApp" launcherIcon="@Drawables.LauncherIcon" minApiLevel="4.0.0">
+<iq:application id="%s" type="datafield" name="@Strings.AppName" entry="TrailApp" launcherIcon="@Drawables.LauncherIcon" minApiLevel="4.2.2">
 <iq:products>%s</iq:products><iq:permissions><iq:uses-permission id="Positioning"/></iq:permissions>
 <iq:languages><iq:language>eng</iq:language><iq:language>zhs</iq:language></iq:languages><iq:barrels/>
 </iq:application></iq:manifest>
@@ -349,6 +459,7 @@ module OfflineMap {
                "zoom": z, "preview_min_zoom":minimum,
                "coverage_version":COVERAGE_VERSION,"coverage":plan['coverage'],
                "preview_assets":sum(len(items) for level,items in levels.items() if level!=z),
+               "navigation":{key:value for key,value in navigation.items() if key!='points'},
                "route_bounds":bounds, "device_capacity_verified": False})
     return output
 
