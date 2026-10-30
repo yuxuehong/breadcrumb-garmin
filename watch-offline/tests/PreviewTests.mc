@@ -37,9 +37,10 @@ function followReturnsToActualGps(logger) {
     map.beginPreview(); map.fit(260,260);
     map.updateGps(OfflineMap.START_X,OfflineMap.START_Y,0);
     map.followLocation();
+    map.updateMotion(OfflineMap.START_X,OfflineMap.START_Y,0,1.0,4);
     Test.assert(map.isTracking());
     Test.assertEqual(map.x,OfflineMap.START_X); Test.assertEqual(map.y,OfflineMap.START_Y);
-    Test.assertEqual(map.zoom,OfflineMap.ZOOM);
+    Test.assertEqual(map.zoom,map.maxZoom());
     return true;
 }
 
@@ -59,7 +60,7 @@ function zoomPreservesCameraAndStopsAtLimits(logger) {
     for(var i=0;i<30;i++){map.changeZoom(-1);}
     Test.assertEqual(map.zoom,OfflineMap.MIN_ZOOM);
     for(var i=0;i<30;i++){map.changeZoom(1);}
-    Test.assertEqual(map.zoom,OfflineMap.ZOOM);
+    Test.assertEqual(map.zoom,map.maxZoom());
     Test.assertEqual(map.x,x); Test.assertEqual(map.y,y);
     return true;
 }
@@ -67,11 +68,11 @@ function zoomPreservesCameraAndStopsAtLimits(logger) {
 (:test)
 function panStopsAtMapBoundary(logger) {
     var map=freshCamera(); map.startPoint();
-    var bounds=OfflineMap.extent(map.zoom);
+    var bounds=OfflineMap.extent(OfflineMap.ZOOM);
     map.pan(-100000,-100000);
-    Test.assertEqual(map.x,bounds[0]+130.0d); Test.assertEqual(map.y,bounds[1]+130.0d);
+    Test.assertEqual(map.x,bounds[0]+65.0d); Test.assertEqual(map.y,bounds[1]+65.0d);
     map.pan(100000,100000);
-    Test.assertEqual(map.x,bounds[2]-130.0d); Test.assertEqual(map.y,bounds[3]-130.0d);
+    Test.assertEqual(map.x,bounds[2]-65.0d); Test.assertEqual(map.y,bounds[3]-65.0d);
     return true;
 }
 
@@ -99,6 +100,7 @@ class PreviewTestCanvas {
     var lastText=null;
     var markerX=null;
     var markerY=null;
+    var polygons=[];
     function getWidth() { return width; }
     function getHeight() { return height; }
     function setColor(a,b) {}
@@ -106,14 +108,21 @@ class PreviewTestCanvas {
     function setPenWidth(width) {}
     function drawLine(a,b,c,d) { lineCount++; }
     function fillCircle(a,b,c) { markerX=a; markerY=b; }
+    function fillPolygon(points) { polygons.add(points); }
     function fillRectangle(a,b,c,d) {}
     function drawText(a,b,c,d,e) { textCount++; lastText=d; }
     function getTextWidthInPixels(text,font) { return text.length()*7; }
     function drawBitmap(x,y,bitmap) {
+        bitmapRectangle(x,y,bitmap,1);
+    }
+    function drawBitmap2(x,y,bitmap,options) {
+        bitmapRectangle(x,y,bitmap,options[:transform].getMatrix()[0]);
+    }
+    function bitmapRectangle(x,y,bitmap,scale) {
         Test.assertEqual(bitmap.getWidth(),256);
         Test.assertEqual(bitmap.getHeight(),256);
-        Test.assert(x < width && y < height && x > -256 && y > -256);
-        rectangles.add([x,y,x+256,y+256]);
+        Test.assert(x < width && y < height && x > -256*scale && y > -256*scale);
+        rectangles.add([x,y,x+256*scale,y+256*scale]);
         count++;
     }
     function assertFullCoverage() {
@@ -138,7 +147,7 @@ class PreviewTestCanvas {
 function allPreviewLevelsLoadRealBitmapResources(logger) {
     var map=freshCamera(); map.startPoint();
     var renderer=new TrailRenderer(map);
-    for(var z=OfflineMap.MIN_ZOOM;z<=OfflineMap.ZOOM;z++) {
+    for(var z=OfflineMap.MIN_ZOOM;z<=map.maxZoom();z++) {
         map.zoom=z;
         var dc=new PreviewTestCanvas();
         renderer.draw(dc,0);
@@ -178,7 +187,7 @@ function everyZoomAndPanExtremeFillsBothWatchSizes(logger) {
     var directions=[[-1,-1],[1,-1],[-1,1],[1,1]];
     for(var s=0;s<sizes.size();s++) {
         map.prepare(sizes[s],sizes[s]);
-        for(var z=OfflineMap.MIN_ZOOM;z<=OfflineMap.ZOOM;z++) {
+        for(var z=OfflineMap.MIN_ZOOM;z<=map.maxZoom();z++) {
             map.zoom=z;
             for(var i=0;i<directions.size();i++) {
                 map.pan(directions[i][0]*1000000,directions[i][1]*1000000);
@@ -192,6 +201,48 @@ function everyZoomAndPanExtremeFillsBothWatchSizes(logger) {
 }
 
 (:test)
+function fractionalCentersHaveNoMissingEdgePixels(logger) {
+    var map=freshCamera(); map.beginPreview();
+    var renderer=new TrailRenderer(map);
+    var b=OfflineMap.extent(OfflineMap.ZOOM);
+    var cx=(Math.floor((b[0]+b[2])/512)*256).toDouble();
+    var cy=(Math.floor((b[1]+b[3])/512)*256).toDouble();
+    var offsets=[-3.6,-1.6,-0.4,0.4,1.6,3.6];
+    var sizes=[218,260];
+    for(var s=0;s<sizes.size();s++) {
+        for(var z=OfflineMap.ZOOM;z<=map.maxZoom();z++) {
+            for(var i=0;i<offsets.size();i++) {
+                map.zoom=z; map.x=cx+offsets[i]; map.y=cy+offsets[i];
+                var dc=new PreviewTestCanvas(); dc.width=sizes[s]; dc.height=sizes[s];
+                renderer.draw(dc,0); dc.assertFullCoverage();
+            }
+        }
+    }
+    renderer.release(); return true;
+}
+
+(:test)
+function navigationArrowHasStableSizeAndNorthIsValid(logger) {
+    var map=freshCamera(); map.recording=true; map.running=true;
+    map.updateMotion(OfflineMap.START_X,OfflineMap.START_Y,0,1.4,4);
+    var renderer=new TrailRenderer(map); var dc=new PreviewTestCanvas();
+    renderer.draw(dc,null);
+    Test.assertEqual(dc.polygons.size(),3);
+    Test.assertEqual(dc.polygons[0][0][0],130);
+    Test.assertEqual(dc.polygons[0][0][1],111);
+    Test.assert(dc.polygons[0][1][1]>130);
+    map.heading=Math.PI/2;
+    dc=new PreviewTestCanvas(); renderer.draw(dc,null);
+    Test.assertEqual(dc.polygons[0][0][0],149);
+    Test.assertEqual(dc.polygons[0][0][1],130);
+    map.heading=null;
+    dc=new PreviewTestCanvas(); renderer.draw(dc,null);
+    Test.assertEqual(dc.polygons.size(),0);
+    Test.assertEqual(dc.markerX,130.0d); Test.assertEqual(dc.markerY,130.0d);
+    renderer.release(); return true;
+}
+
+(:test)
 function outsideTrackingShowsWarningAtActualPosition(logger) {
     var map=freshCamera(); map.recording=true;
     var bounds=OfflineMap.extent(OfflineMap.ZOOM);
@@ -200,7 +251,7 @@ function outsideTrackingShowsWarningAtActualPosition(logger) {
     var renderer=new TrailRenderer(map); var dc=new PreviewTestCanvas();
     renderer.draw(dc,null);
     Test.assertEqual(map.x,x); Test.assertEqual(map.y,y);
-    Test.assertEqual(dc.textCount,1);
+    Test.assertEqual(dc.textCount,2);
     Test.assert(dc.lastText.equals(trailText(Rez.Strings.Outside)));
     Test.assertEqual(dc.markerX,130.0d); Test.assertEqual(dc.markerY,130.0d);
     renderer.release(); return true;
