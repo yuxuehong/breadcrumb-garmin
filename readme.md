@@ -4,7 +4,8 @@
 > around the race at every supported zoom level, preview contours and the route, compile an offline FR255 data field
 > plus a standalone Race Preview app, and install both over USB with read-back verification.
 > Open Race Preview from the watch activity/app list to zoom and pan before a race,
-> independently of GPS. Hiking and trail-running data pages retain UP/DOWN navigation.
+> independently of GPS. The live hiking/trail-running map follows GPS with a direction marker
+> and automatic zoom; UP/DOWN still switches normal activity data pages.
 > The offline variant is in `watch-offline/`; the desktop app is in `mac/`.
 > Original upstream code and attribution are preserved below.
 
@@ -14,7 +15,7 @@
 路线已经在手表里时，可连接 USB，点击 **从手表导入 → 选择路线 → 导入路线**，再按相同流程准备地图。
 支持手表保存的路线 FIT / GPX；列表按文件名显示，导入后使用路线内的名称。读取和导入不联网下载地图，也不修改原有路线。
 目前一次安装一条路线及其底图；在原生徒步导航中换路线，不会自动切换本工具的地图。
-地图使用 OpenStreetMap 路网、SRTM 高程和 OpenTopoMap 样式；每个缩放级别都提前下载真实底图。
+地图使用 OpenStreetMap 路网、SRTM 高程和 OpenTopoMap 样式；各地图级别都提前下载真实底图，另提供一级两倍显示。
 “路线周边”是额外保留的范围，程序还会自动补足至少半个屏幕的余量，准备包含整条 GPX 的完整矩形区域。
 手表离线读取已安装地图，不会临时联网补图；此功能面向一场比赛附近，不提供整省下载。
 
@@ -22,7 +23,7 @@
 首次可在运动／应用列表底部的“添加”中查找，无需 GPS 或开始运动。
 启动时显示地图署名 5 秒，按 START 可提前进入地图；之后画面只保留地图和路线，按键说明放在这里。
 
-| 地图页按键 | 作用 |
+| 独立“赛道预览”按键 | 作用 |
 | --- | --- |
 | UP / DOWN | 默认放大 / 缩小；在移动模式中向北 / 南或西 / 东移动 |
 | START | 依次切换“缩放 → 南北移动 → 东西移动” |
@@ -31,14 +32,26 @@
 
 “查看全程”会将路线放进圆形屏幕内并留出边距。移动到已下载范围的边缘会停止，保持整个视口有底图。
 “标准”为 14 级，“详细”为 15 级：若此前安装的是标准地图，选详细重新生成即可多放大一档。
-最大倍率取决于已下载地图的细节级别，不继续进行数字放大。
+v6 在已下载的最详细地图之上增加一级两倍显示，字、路线和等高线一起放大，但不会产生新的地理细节。
 所有缩放级别合计最多 256 张切片；范围较大时可选标准、减少周边范围，或将长赛道分段准备。
 
-运动中使用 **Breadcrumb Trail** 单字段全屏地图页；UP / DOWN 仍可切换到心率、距离、时间等数据页。
-正式记录中若 GPS 走出地图范围，会保留真实位置并显示越界提示。
+运动中使用 **Breadcrumb Trail** 单字段全屏地图页，活动仍由佳明原生徒步或越野跑记录。
+**UP / DOWN** 照常切换心率、距离、时间等页面，**START** 照常开始或暂停；当前运动地图采用自动缩放，没有直接按键缩放。
+地图朝北，实时 GPS 位置保持居中：白边大箭头表示位置和已知朝向，方向未知时显示圆点，蓝线表示已安装的路线。
+底图随你移动，底部比例尺帮助判断距离。
+
+慢速行走或跑动时优先近景；持续较快移动或离路线较远时扩大视野，恢复后再回到近景。
+扩大视野约需持续 8 秒，恢复近景约需 12 秒，避免地图频繁跳动。暂停保留比例，不回到全程预览。
+定位失效或只有上次的位置时，保留最后视口并显示“等待 GPS 定位”，不把旧位置当作实时位置；
+信号弱时显示灰色标记并暂不自动缩放。这些状态不停止运动记录。
+
+使用佳明原生路线导航时，在徒步或越野跑中长按 **UP → 导航 → 路线 → 选择与底图相同的路线 → 开始路线导航 → START**。
+添加地图页不会自动开始原生导航，切换原生路线也不会自动切换本工具的地图。
+超出已下载范围时保留真实位置并显示越界提示，不自动补图；本工具不提供道路重规划或自动转弯提示。
 旧比赛需在 Mac 重新生成并安装：已有缓存会复用，缺少的范围和缩放级别会补充下载。
 
-目前用户已在真实 255 上确认 v5 缩到最小、移动到边缘均铺满屏幕，且没有常驻提示文字；室外跟随、长距离运行和续航仍待验证。
+此前用户已在真实 255 上确认 v5 缩到最小、移动到边缘均铺满屏幕，且没有常驻提示文字；
+这不代表 v6 自动导航已完成实机验证，室外跟随、长距离运行和续航仍需单独验证。
 完整安装步骤、地图来源与开发说明见[中文使用说明](docs/mac-offline.md)。
 
 ---
