@@ -45,7 +45,7 @@ if __name__=='__main__':
         'base.sourcePath = source;'+os.path.relpath(ROOT/'watch-offline/tests',folder))
     (folder/'preview-tests.jungle').write_text(jungle)
     run_bounded([str(sdk/'bin/monkeyc'),'-f','preview-tests.jungle','-d','fr255','-y',str(args.key),
-                 '-o','PREVIEW_TEST.prg','-t'],folder,45)
+                 '-o','PREVIEW_TEST.prg','-t'],folder,180)
     # SDK 9.3's shell may exit 1 even when its test summary reports success.
     # Require the actual nonempty test summary, never an exit code alone.
     result=run_bounded([str(sdk/'bin/monkeydo'),'PREVIEW_TEST.prg','fr255','-t'],folder,45,check_exit=False)
